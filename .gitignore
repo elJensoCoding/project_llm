@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Daten (generiert)
+data/csv/
+data/parquet/
+
+# IDE
+.vscode/
+.idea/
+
+# NiceGUI
+.nicegui/
+
+# Env
+.env

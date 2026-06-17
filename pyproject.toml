@@ -1,0 +1,26 @@
+[project]
+name = "project-llm"
+version = "0.1.0"
+description = "Projekt-Datenbank mit lokalem LLM-Chat"
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=1.1.0",
+    "pandas>=2.0.0",
+    "pyarrow>=16.0.0",
+    "faker>=25.0.0",
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "nicegui>=2.0.0",
+    "ollama>=0.3.0",
+]
+
+[project.scripts]
+pllm = "cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
