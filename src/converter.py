@@ -20,7 +20,7 @@ def convert_all() -> None:
             print(f"  FEHLER: {src} nicht gefunden — bitte zuerst 'pllm generate' ausführen")
             continue
         con.execute(
-            f"COPY (SELECT * FROM read_csv_auto('{src.as_posix()}')) "
+            f"COPY (SELECT * FROM read_csv_auto('{src.as_posix()}', nullstr='')) "
             f"TO '{dst.as_posix()}' (FORMAT PARQUET)"
         )
         count = con.execute(f"SELECT COUNT(*) FROM '{dst.as_posix()}'").fetchone()[0]

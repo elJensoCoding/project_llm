@@ -36,22 +36,33 @@ _SCHEMA = """
 | artikelgruppe| VARCHAR | Gruppe ohne Leerzeichen (Kabel, Rohr, Fitting, Schalter, Armatur, Dämmung, Befestigung) |
 
 ### Tabelle: einkaufspositionen
-| Spalte        | Typ     | Beschreibung                                          |
-|---------------|---------|-------------------------------------------------------|
-| belegnummer   | INTEGER | Belegnummer, 6-stellig (ein Beleg hat mehrere Positionen) |
-| belegdatum    | DATE    | Datum des Belegs                                      |
-| typ           | VARCHAR | Belegtyp: 'Anfrage', 'Bestellung' oder 'Rechnung'     |
-| artikel_nr    | INTEGER | FK → artikel.nummer                                   |
-| gewerk_id     | INTEGER | FK → gewerke.gewerk_id                                |
-| position      | INTEGER | Positionsnummer innerhalb des Belegs (1, 2, 3, …)     |
-| menge         | INTEGER | Bestellmenge                                          |
-| preis         | DECIMAL | Einzelpreis in Euro                                   |
-| rabatt        | DECIMAL | Rabatt als Dezimalzahl (0.10 = 10 %, 0.0 = kein Rabatt) |
-| positionswert | DECIMAL | Nettobetrag: menge * preis * (1 - rabatt)             |
-| freitext      | VARCHAR | Optionaler Kommentar zur Position                     |
-| projekt_nr    | INTEGER | FK → projekte.projektnummer                           |
-| lieferant_nr  | INTEGER | Lieferantennummer, 6-stellig                          |
-| lieferant_name| VARCHAR | Name des Lieferanten                                  |
+| Spalte               | Typ     | Beschreibung                                          |
+|----------------------|---------|-------------------------------------------------------|
+| belegnummer          | INTEGER | Belegnummer, 6-stellig (ein Beleg hat mehrere Positionen) |
+| belegdatum           | DATE    | Datum des Belegs                                      |
+| typ                  | VARCHAR | Belegtyp: 'Anfrage', 'Bestellung' oder 'Rechnung'     |
+| referenz_belegnummer | INTEGER | Vorgaenger-Beleg: Bestellung→Anfrage, Rechnung→Bestellung; NULL bei Anfragen |
+| liefertermin         | DATE    | Vereinbarter Liefertermin; nur bei Bestellungen gesetzt, sonst NULL |
+| artikel_nr           | INTEGER | FK → artikel.nummer                                   |
+| gewerk_id            | INTEGER | FK → gewerke.gewerk_id                                |
+| position             | INTEGER | Positionsnummer innerhalb des Belegs (1, 2, 3, …)     |
+| menge                | INTEGER | Menge                                                 |
+| preis                | DECIMAL | Einzelpreis in Euro (darf zwischen Anfrage/Bestellung/Rechnung leicht abweichen) |
+| rabatt               | DECIMAL | Rabatt als Dezimalzahl (0.10 = 10 %, 0.0 = kein Rabatt) |
+| positionswert        | DECIMAL | Nettobetrag: menge * preis * (1 - rabatt)             |
+| freitext             | VARCHAR | Optionaler Kommentar zur Position                     |
+| projekt_nr           | INTEGER | FK → projekte.projektnummer                           |
+| lieferant_nr         | INTEGER | Lieferantennummer, 6-stellig                          |
+| lieferant_name       | VARCHAR | Name des Lieferanten                                  |
+
+### Vorgangskette
+Anfrage (referenz_belegnummer IS NULL)
+  → Bestellung (referenz_belegnummer = Anfrage.belegnummer, hat liefertermin)
+    → Rechnung (referenz_belegnummer = Bestellung.belegnummer)
+
+Eine Bestellung gilt als UEBERFAELLIG wenn:
+  liefertermin < CURRENT_DATE
+  UND keine Rechnung mit referenz_belegnummer = Bestellung.belegnummer existiert
 
 ## Beziehungen
 - projekte.projektleiter_id → kontakte.kontakt_id
@@ -91,6 +102,15 @@ SQL: SELECT monat, ROUND(AVG(total), 2) AS avg_bestellwert FROM (SELECT belegnum
 
 Frage: Durchschnittlicher Rechnungswert pro Projekt
 SQL: SELECT projekt_nr, ROUND(AVG(total), 2) AS avg_rechnungswert FROM (SELECT belegnummer, projekt_nr, SUM(positionswert) AS total FROM einkaufspositionen WHERE typ = 'Rechnung' GROUP BY belegnummer, projekt_nr) t GROUP BY projekt_nr ORDER BY avg_rechnungswert DESC
+
+Frage: Alle ueberfaelligen Bestellungen (Liefertermin vergangen, noch keine Rechnung)
+SQL: SELECT b.belegnummer, b.belegdatum, b.liefertermin, b.lieferant_name, b.projekt_nr, DATEDIFF('day', b.liefertermin::DATE, CURRENT_DATE) AS tage_ueberfaellig, ROUND(SUM(b.positionswert), 2) AS bestellwert FROM einkaufspositionen b WHERE b.typ = 'Bestellung' AND b.liefertermin::DATE < CURRENT_DATE AND b.belegnummer NOT IN (SELECT referenz_belegnummer FROM einkaufspositionen WHERE typ = 'Rechnung' AND referenz_belegnummer IS NOT NULL) GROUP BY b.belegnummer, b.belegdatum, b.liefertermin, b.lieferant_name, b.projekt_nr ORDER BY b.liefertermin
+
+Frage: Ueberfaellige Bestellungen fuer Projekt 10001
+SQL: SELECT b.belegnummer, b.belegdatum, b.liefertermin, b.lieferant_name, DATEDIFF('day', b.liefertermin::DATE, CURRENT_DATE) AS tage_ueberfaellig, ROUND(SUM(b.positionswert), 2) AS bestellwert FROM einkaufspositionen b WHERE b.typ = 'Bestellung' AND b.projekt_nr = 10001 AND b.liefertermin::DATE < CURRENT_DATE AND b.belegnummer NOT IN (SELECT referenz_belegnummer FROM einkaufspositionen WHERE typ = 'Rechnung' AND referenz_belegnummer IS NOT NULL) GROUP BY b.belegnummer, b.belegdatum, b.liefertermin, b.lieferant_name ORDER BY b.liefertermin
+
+Frage: Vorgangskette Anfrage Bestellung Rechnung mit Status fuer ein Projekt
+SQL: SELECT a.belegnummer AS anfrage_nr, a.belegdatum AS anfrage_datum, b.belegnummer AS bestell_nr, b.belegdatum AS bestell_datum, b.liefertermin, r.belegnummer AS rechnung_nr, CASE WHEN r.belegnummer IS NOT NULL THEN 'Abgerechnet' WHEN b.belegnummer IS NULL THEN 'Nur Anfrage' WHEN b.liefertermin::DATE < CURRENT_DATE THEN 'Ueberfaellig' ELSE 'Offen' END AS status FROM (SELECT DISTINCT belegnummer, belegdatum, projekt_nr FROM einkaufspositionen WHERE typ = 'Anfrage') a LEFT JOIN (SELECT DISTINCT belegnummer, belegdatum, liefertermin, referenz_belegnummer FROM einkaufspositionen WHERE typ = 'Bestellung') b ON b.referenz_belegnummer = a.belegnummer LEFT JOIN (SELECT DISTINCT belegnummer, referenz_belegnummer FROM einkaufspositionen WHERE typ = 'Rechnung') r ON r.referenz_belegnummer = b.belegnummer WHERE a.projekt_nr = 10001 ORDER BY a.belegnummer
 """
 
 
