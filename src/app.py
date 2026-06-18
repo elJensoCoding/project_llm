@@ -4,6 +4,8 @@ import os
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from nicegui import Client, ui
@@ -24,15 +26,15 @@ MODELS = [
 ]
 
 EXAMPLES = [
-    "Alle Projekte anzeigen",
-    "Bestellungen fuer Projekt 10001",
+    "Bestellvolumen nach Monat",
     "Top 5 Lieferanten nach Volumen",
-    "Rechnungen nach Monat gruppiert",
     "Gesamtwert pro Gewerk und Belegtyp",
+    "Durchschnittlicher Bestellwert pro Monat",
+    "Rechnungen nach Monat gruppiert",
+    "Alle Projekte anzeigen",
+    "Ueberfaellige Bestellungen",
     "Welcher Projektleiter betreut die meisten Projekte?",
     "Durchschnittlicher Rabatt pro Lieferant",
-    "Artikel in der Gruppe Kabel",
-    "Offene Anfragen ohne Bestellung",
 ]
 
 
@@ -57,42 +59,112 @@ _state = _State()
 
 
 # ---------------------------------------------------------------------------
-# Hilfs-Funktionen
+# Chart-Erkennung
+# ---------------------------------------------------------------------------
+_TIME_KEYWORDS = {"monat", "datum", "date", "jahr", "quartal", "tag", "woche", "month"}
+
+
+def _build_chart_options(df: pd.DataFrame | None) -> dict | None:
+    """Heuristik: gibt ECharts-Options zurück oder None wenn kein Chart passt."""
+    if df is None or len(df) < 2:
+        return None
+
+    num_cols = df.select_dtypes(include="number").columns.tolist()
+    if not num_cols:
+        return None
+
+    cat_cols = [c for c in df.columns if c not in num_cols]
+    if not cat_cols:
+        return None
+
+    x_col = cat_cols[0]
+    y_cols = num_cols[:3]
+
+    is_time = any(kw in x_col.lower() for kw in _TIME_KEYWORDS)
+
+    # X-Achsenbeschriftung: Timestamps auf "Jun 2024" kuerzen
+    try:
+        x_labels = pd.to_datetime(df[x_col], format="mixed").dt.strftime("%b %Y").tolist()
+    except Exception:
+        x_labels = df[x_col].astype(str).str[:20].tolist()
+
+    def _safe_vals(col):
+        return [round(float(v), 2) if pd.notna(v) else 0 for v in df[col]]
+
+    # Donut: wenige Kategorien, eine Kennzahl, kein Zeitbezug
+    if not is_time and len(df) <= 7 and len(y_cols) == 1:
+        data = [{"name": n, "value": v}
+                for n, v in zip(x_labels, _safe_vals(y_cols[0]))]
+        return {
+            "tooltip": {"trigger": "item", "formatter": "{b}: {c} ({d}%)"},
+            "legend": {"type": "scroll", "orient": "vertical",
+                       "right": "5%", "top": "middle"},
+            "series": [{
+                "type": "pie",
+                "radius": ["38%", "65%"],
+                "center": ["40%", "50%"],
+                "data": data,
+                "label": {"formatter": "{b}\n{d}%"},
+                "emphasis": {"itemStyle": {"shadowBlur": 10}},
+            }],
+        }
+
+    # Linie (Zeitreihe) oder Balken (Kategorien)
+    chart_type = "line" if is_time else "bar"
+    series = []
+    for y_col in y_cols:
+        s = {"name": y_col, "type": chart_type,
+             "data": _safe_vals(y_col), "smooth": True}
+        if is_time and len(y_cols) == 1:
+            s["areaStyle"] = {"opacity": 0.25}
+        series.append(s)
+
+    return {
+        "tooltip": {"trigger": "axis"},
+        "legend": {"data": y_cols} if len(y_cols) > 1 else {},
+        "grid": {"left": "3%", "right": "4%", "bottom": "18%", "containLabel": True},
+        "xAxis": {
+            "type": "category",
+            "data": x_labels,
+            "axisLabel": {"rotate": 30 if len(x_labels) > 5 else 0},
+        },
+        "yAxis": {"type": "value"},
+        "series": series,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tabellen-Rendering
 # ---------------------------------------------------------------------------
 _PAGE_SIZE = 20
-_GRID_HEIGHT_PX = 420   # feste Hoehe — layout bricht nicht mehr auf
+_GRID_HEIGHT_PX = 350   # etwas kleiner wenn Chart darueber steht
 
 
-def _result_table(df, container) -> None:
-    """Volle Breite, feste Hoehe, Pagination — stabil bei beliebig vielen Zeilen."""
+def _result_table(df: pd.DataFrame, container) -> None:
+    """Chart (wenn erkennbar) + Tabelle, beide volle Breite."""
+    chart_opts = _build_chart_options(df)
     cols = [
-        {
-            "field": c,
-            "headerName": c,
-            "sortable": True,
-            "filter": True,
-            "resizable": True,
-            "minWidth": 100,
-        }
+        {"field": c, "headerName": c, "sortable": True,
+         "filter": True, "resizable": True, "minWidth": 100}
         for c in df.columns
     ]
     rows = df.fillna("").astype(str).to_dict("records")
     use_pagination = len(rows) > _PAGE_SIZE
+    grid_opts = {
+        "columnDefs": cols,
+        "rowData": rows,
+        "onGridReady": "p => p.api.sizeColumnsToFit()",
+        "onGridSizeChanged": "p => p.api.sizeColumnsToFit()",
+    }
+    if use_pagination:
+        grid_opts["pagination"] = True
+        grid_opts["paginationPageSize"] = _PAGE_SIZE
+
     with container:
-        grid_opts = {
-            "columnDefs": cols,
-            "rowData": rows,
-            "onGridReady": "p => p.api.sizeColumnsToFit()",
-            "onGridSizeChanged": "p => p.api.sizeColumnsToFit()",
-        }
-        if use_pagination:
-            grid_opts["pagination"] = True
-            grid_opts["paginationPageSize"] = _PAGE_SIZE
-        (
-            ui.aggrid(grid_opts)
-            .classes("w-full")
-            .style(f"height: {_GRID_HEIGHT_PX}px")
-        )
+        if chart_opts:
+            ui.echart(chart_opts).classes("w-full").style("height: 380px")
+            ui.separator().classes("my-2")
+        ui.aggrid(grid_opts).classes("w-full").style(f"height: {_GRID_HEIGHT_PX}px")
         ui.label(f"{len(df):,} Zeile(n)  |  {len(df.columns)} Spalte(n)").classes(
             "text-xs text-gray-400 mt-1"
         )
