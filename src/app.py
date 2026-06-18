@@ -151,17 +151,44 @@ def index(client: Client) -> None:
         df, error = await asyncio.to_thread(db_execute, sql)
         status.delete()
 
+        has_data = not error and df is not None and not df.empty
+
+        # Bubble: erst Interpretation-Placeholder, darunter SQL-Klappe.
+        # Tabelle erscheint sofort; Interpretationstext laeuft danach nach.
         with msg_col:
+            if has_data:
+                interp_label = (
+                    ui.label("Zusammenfassung wird erstellt ...")
+                    .classes("text-gray-400 italic text-sm animate-pulse")
+                )
             with ui.expansion("SQL", icon="code").classes("w-full"):
                 ui.code(sql, language="sql").classes("w-full text-sm overflow-auto").style("max-height: 200px")
 
         with result_area:
             if error:
                 ui.label(f"Fehler: {error}").classes("text-red-500 text-sm")
-            elif df is None or df.empty:
+            elif not has_data:
                 ui.label("Keine Ergebnisse.").classes("text-gray-400 text-sm italic")
             else:
                 _result_table(df, result_area)
+
+        # Zweiter LLM-Call: Freitext-Zusammenfassung (nur wenn Daten vorhanden)
+        if has_data:
+            try:
+                interpretation = await asyncio.to_thread(
+                    _state.session.interpret, question, sql, df
+                )
+            except Exception:
+                interpretation = None
+
+            if interpretation:
+                interp_label.set_text(interpretation)
+                interp_label.classes(
+                    remove="text-gray-400 italic text-sm animate-pulse",
+                    add="text-slate-800 text-sm",
+                )
+            else:
+                interp_label.delete()
 
         await client.run_javascript(
             "window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'})"
