@@ -103,6 +103,9 @@ SQL: SELECT monat, ROUND(AVG(total), 2) AS avg_bestellwert FROM (SELECT belegnum
 Frage: Durchschnittlicher Rechnungswert pro Projekt
 SQL: SELECT projekt_nr, ROUND(AVG(total), 2) AS avg_rechnungswert FROM (SELECT belegnummer, projekt_nr, SUM(positionswert) AS total FROM einkaufspositionen WHERE typ = 'Rechnung' GROUP BY belegnummer, projekt_nr) t GROUP BY projekt_nr ORDER BY avg_rechnungswert DESC
 
+Frage: Bestellungen pro Woche im Januar 2025
+SQL: SELECT strftime(DATE_TRUNC('week', belegdatum::DATE), '%Y-W%V') AS woche, COUNT(DISTINCT belegnummer) AS bestellungen, ROUND(SUM(positionswert), 2) AS volumen FROM einkaufspositionen WHERE typ = 'Bestellung' AND belegdatum::DATE >= '2025-01-01' AND belegdatum::DATE < '2025-02-01' GROUP BY woche ORDER BY woche
+
 Frage: Alle ueberfaelligen Bestellungen (Liefertermin vergangen, noch keine Rechnung)
 SQL: SELECT b.belegnummer, b.belegdatum, b.liefertermin, b.lieferant_name, b.projekt_nr, DATEDIFF('day', b.liefertermin::DATE, CURRENT_DATE) AS tage_ueberfaellig, ROUND(SUM(b.positionswert), 2) AS bestellwert FROM einkaufspositionen b WHERE b.typ = 'Bestellung' AND b.liefertermin::DATE < CURRENT_DATE AND b.belegnummer NOT IN (SELECT referenz_belegnummer FROM einkaufspositionen WHERE typ = 'Rechnung' AND referenz_belegnummer IS NOT NULL) GROUP BY b.belegnummer, b.belegdatum, b.liefertermin, b.lieferant_name, b.projekt_nr ORDER BY b.liefertermin
 
@@ -126,6 +129,14 @@ def get_system_prompt() -> str:
 - Bei Folgefragen (z.B. "gruppiere das nach Monat") das vorherige SQL sinnvoll erweitern oder umschreiben
 - Zahlen in Euro auf 2 Dezimalstellen runden: ROUND(wert, 2)
 - Bei ambigen Anfragen die naheliegendste Interpretation wählen
+- DuckDB-Funktionen statt PostgreSQL/Oracle verwenden:
+    FALSCH: TO_CHAR(datum, 'YYYY-MM')  RICHTIG: strftime(datum::DATE, '%Y-%m')
+    FALSCH: TO_DATE(str, 'YYYY-MM-DD') RICHTIG: CAST(str AS DATE)
+    FALSCH: NVL(a, b)                  RICHTIG: COALESCE(a, b)
+    FALSCH: DECODE(x, a, b)            RICHTIG: CASE WHEN x=a THEN b END
+    Datum-Filter: belegdatum::DATE >= '2025-01-01' AND belegdatum::DATE < '2025-02-01'
+    Jahr/Monat extrahieren: YEAR(belegdatum), MONTH(belegdatum)
+    Kalenderformat: strftime(datum::DATE, '%Y-W%V') fuer ISO-Kalenderwoche
 
 {_SCHEMA}
 
