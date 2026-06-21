@@ -62,6 +62,14 @@ _state = _State()
 # Chart-Erkennung
 # ---------------------------------------------------------------------------
 _TIME_KEYWORDS = {"monat", "datum", "date", "jahr", "quartal", "tag", "woche", "month"}
+_ID_SUFFIXES   = ("_id", "_nr", "nummer", "_key")
+_ID_EXACT      = {"id", "nr", "nummer", "position"}
+
+
+def _is_id_col(col: str) -> bool:
+    """True wenn die Spalte wie ein Schlüssel/Zähler aussieht, kein Messwert."""
+    lower = col.lower()
+    return lower in _ID_EXACT or any(lower.endswith(s) for s in _ID_SUFFIXES)
 
 
 def _build_chart_options(df: pd.DataFrame | None) -> dict | None:
@@ -69,16 +77,21 @@ def _build_chart_options(df: pd.DataFrame | None) -> dict | None:
     if df is None or len(df) < 2:
         return None
 
-    num_cols = df.select_dtypes(include="number").columns.tolist()
-    if not num_cols:
+    all_num    = df.select_dtypes(include="number").columns.tolist()
+    id_cols    = [c for c in all_num if _is_id_col(c)]
+    metric_cols = [c for c in all_num if not _is_id_col(c)]
+
+    # Ohne echte Messwerte kein Chart
+    if not metric_cols:
         return None
 
-    cat_cols = [c for c in df.columns if c not in num_cols]
+    # Kategorisch: Text-Spalten + ID-artige Zahlen (gut als X-Achse, nicht als Y)
+    cat_cols = [c for c in df.columns if c not in all_num] + id_cols
     if not cat_cols:
         return None
 
     x_col = cat_cols[0]
-    y_cols = num_cols[:3]
+    y_cols = metric_cols[:3]
 
     is_time = any(kw in x_col.lower() for kw in _TIME_KEYWORDS)
 

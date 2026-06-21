@@ -39,11 +39,14 @@ DEFAULT_MODEL = "qwen2.5-coder:7b"
 
 
 def _strip_fences(text: str) -> str:
-    """Entfernt Markdown-Codeblöcke falls das Modell sie trotzdem liefert."""
+    """Entfernt Markdown-Codeblöcke und imitierte Ergebnis-Blöcke aus der LLM-Antwort."""
     text = text.strip()
-    # Remove ```sql ... ``` or ``` ... ```
+    # Markdown-Codeblöcke entfernen
     text = re.sub(r"^```(?:sql)?\s*\n?", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\n?```\s*$", "", text)
+    # LLM imitiert manchmal den von feed_result angehängten [SYSTEM-ERGEBNIS]-Block.
+    # Alles ab diesem Marker abschneiden — es ist kein gültiges SQL.
+    text = re.sub(r"\n\n\[SYSTEM-ERGEBNIS.*", "", text, flags=re.DOTALL)
     return text.strip()
 
 
@@ -79,10 +82,10 @@ class ChatSession:
         n = len(df)
         cols = ", ".join(df.columns)
         preview = df.head(max_rows).to_string(index=False)
-        snippet = f"Ergebnis ({n} Zeile(n), Spalten: {cols}):\n{preview}"
+        snippet = f"[SYSTEM-ERGEBNIS: {n} Zeile(n), Spalten: {cols}]\n{preview}"
         if n > max_rows:
             snippet += f"\n... ({n - max_rows} weitere Zeilen nicht gezeigt)"
-        self._messages[-1]["content"] += f"\n\n-- {snippet}"
+        self._messages[-1]["content"] += f"\n\n{snippet}"
 
     def interpret(self, question: str, sql: str, df: pd.DataFrame) -> str:
         """Zweiter Pass: Ergebnis-DataFrame -> kurzer Freitext.
