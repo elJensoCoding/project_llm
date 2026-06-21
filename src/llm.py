@@ -66,6 +66,24 @@ class ChatSession:
         self._messages.append({"role": "assistant", "content": sql})
         return sql
 
+    def feed_result(self, df: pd.DataFrame, max_rows: int = 5) -> None:
+        """Haengt das Abfrageergebnis an die letzte SQL-Antwort im Verlauf an.
+
+        Dadurch weiss das Modell bei Folgefragen, welche konkreten Werte
+        (Projektnummern, Namen, Datumswerte …) die vorherige Abfrage geliefert hat.
+        """
+        if df is None or df.empty:
+            return
+        if not self._messages or self._messages[-1]["role"] != "assistant":
+            return
+        n = len(df)
+        cols = ", ".join(df.columns)
+        preview = df.head(max_rows).to_string(index=False)
+        snippet = f"Ergebnis ({n} Zeile(n), Spalten: {cols}):\n{preview}"
+        if n > max_rows:
+            snippet += f"\n... ({n - max_rows} weitere Zeilen nicht gezeigt)"
+        self._messages[-1]["content"] += f"\n\n-- {snippet}"
+
     def interpret(self, question: str, sql: str, df: pd.DataFrame) -> str:
         """Zweiter Pass: Ergebnis-DataFrame -> kurzer Freitext.
         Voellig zustandslos — benutzt NICHT self._messages."""

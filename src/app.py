@@ -225,6 +225,12 @@ def index(client: Client) -> None:
 
         has_data = not error and df is not None and not df.empty
 
+        # Ergebnis in den Konversationsverlauf einpflegen — nur so weiss das
+        # Modell bei Folgefragen, welche konkreten Werte zurueckkamen.
+        if has_data:
+            async with _state.lock:
+                await asyncio.to_thread(_state.session.feed_result, df)
+
         # Bubble: erst Interpretation-Placeholder, darunter SQL-Klappe.
         # Tabelle erscheint sofort; Interpretationstext laeuft danach nach.
         with msg_col:

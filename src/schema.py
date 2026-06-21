@@ -114,6 +114,15 @@ SQL: SELECT b.belegnummer, b.belegdatum, b.liefertermin, b.lieferant_name, DATED
 
 Frage: Vorgangskette Anfrage Bestellung Rechnung mit Status fuer ein Projekt
 SQL: SELECT a.belegnummer AS anfrage_nr, a.belegdatum AS anfrage_datum, b.belegnummer AS bestell_nr, b.belegdatum AS bestell_datum, b.liefertermin, r.belegnummer AS rechnung_nr, CASE WHEN r.belegnummer IS NOT NULL THEN 'Abgerechnet' WHEN b.belegnummer IS NULL THEN 'Nur Anfrage' WHEN b.liefertermin::DATE < CURRENT_DATE THEN 'Ueberfaellig' ELSE 'Offen' END AS status FROM (SELECT DISTINCT belegnummer, belegdatum, projekt_nr FROM einkaufspositionen WHERE typ = 'Anfrage') a LEFT JOIN (SELECT DISTINCT belegnummer, belegdatum, liefertermin, referenz_belegnummer FROM einkaufspositionen WHERE typ = 'Bestellung') b ON b.referenz_belegnummer = a.belegnummer LEFT JOIN (SELECT DISTINCT belegnummer, referenz_belegnummer FROM einkaufspositionen WHERE typ = 'Rechnung') r ON r.referenz_belegnummer = b.belegnummer WHERE a.projekt_nr = 10001 ORDER BY a.belegnummer
+
+Frage: Gib mir die Adresse zu dem Projekt, wo xxx yyy Projekteinkäufer ist.
+SQL: SELECT p.projektnummer, p.schlagwort, p.adresse, k.name AS projekteinkäufer FROM projekte p JOIN kontakte k ON p."projekteinkäufer_id" = k.kontakt_id WHERE k.name LIKE '%xxx yyy%'
+
+-- Ergebnis (1 Zeile(n), Spalten: projektnummer, schlagwort, adresse, projekteinkäufer):
+-- 10017  Rohstoff Neubau  Hauptstr. 5, Hamburg  xxx yyy
+
+Folgefrage: Zeig das Projekt.
+SQL: SELECT * FROM projekte WHERE projektnummer = 10017
 """
 
 
@@ -126,7 +135,18 @@ def get_system_prompt() -> str:
 - Verwende ausschließlich DuckDB-kompatibles SQL
 - Heutiges Datum: {today} — für relative Zeitangaben CURRENT_DATE und INTERVAL-Syntax verwenden
 - Spaltennamen mit Umlauten (z.B. projekteinkäufer_id) in doppelte Anführungszeichen setzen
-- Bei Folgefragen (z.B. "gruppiere das nach Monat") das vorherige SQL sinnvoll erweitern oder umschreiben
+- Textsuche auf Namen/Adressen/Bezeichnungen immer mit ILIKE statt LIKE (case-insensitiv)
+- Wenn du auf die Tabelle projekte zugreifst, gib projektnummer IMMER mit aus (auch wenn nicht
+      explizit verlangt), damit Folgefragen den Projektbezug herstellen können.
+- Bei Folgefragen IMMER auf den KONVERSATIONSVERLAUF zurueckgreifen:
+      a) Zuerst das "-- Ergebnis ..."-Kommentar deiner letzten Antwort pruefen — steht dort eine
+         projektnummer, verwende sie direkt als Filter.
+      b) Falls die projektnummer im Ergebnis fehlt, schaue auf das SQL deiner letzten Antwort:
+         leite daraus die WHERE-/JOIN-Bedingungen ab und baue ein Subquery, z.B.:
+         SELECT * FROM projekte WHERE "projekteinkäufer_id" = (SELECT kontakt_id FROM kontakte WHERE name LIKE '%xxx yyy%')
+      c) Die Werte aus den BEISPIELEN unten (z.B. projektnummer 10001) sind NUR illustrativ —
+         sie duerfen NIEMALS als Kontext-Anker bei Folgefragen dienen.
+      Das vorherige SQL sinnvoll erweitern oder umschreiben (z.B. "gruppiere das nach Monat")
 - Zahlen in Euro auf 2 Dezimalstellen runden: ROUND(wert, 2)
 - Bei ambigen Anfragen die naheliegendste Interpretation wählen
 - DuckDB-Funktionen statt PostgreSQL/Oracle verwenden:
