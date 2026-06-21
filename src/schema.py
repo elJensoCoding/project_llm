@@ -94,6 +94,9 @@ SQL: SELECT e.belegnummer, e.belegdatum, e.lieferant_name, g.name AS gewerk, e.p
 Frage: Projektleiter und Einkäufer pro Projekt
 SQL: SELECT p.projektnummer, p.schlagwort, kl.name AS projektleiter, ke.name AS projekteinkäufer FROM projekte p JOIN kontakte kl ON p.projektleiter_id = kl.kontakt_id JOIN kontakte ke ON p."projekteinkäufer_id" = ke.kontakt_id
 
+Frage: Welche Belegtypen erstellt Yvette Otto am häufigsten?
+SQL: SELECT e.typ, COUNT(DISTINCT e.belegnummer) AS anzahl FROM einkaufspositionen e JOIN projekte p ON e.projekt_nr = p.projektnummer JOIN kontakte k ON p."projekteinkäufer_id" = k.kontakt_id WHERE k.name ILIKE '%Yvette Otto%' GROUP BY e.typ ORDER BY anzahl DESC
+
 Frage: Durchschnittlicher Rabatt pro Lieferant
 SQL: SELECT lieferant_name, ROUND(AVG(rabatt) * 100, 1) AS avg_rabatt_pct, COUNT(*) AS positionen FROM einkaufspositionen WHERE rabatt > 0 GROUP BY lieferant_name ORDER BY avg_rabatt_pct DESC
 
@@ -124,8 +127,25 @@ SQL: SELECT * FROM projekte WHERE projektnummer = 10017
 """
 
 
-def get_system_prompt() -> str:
+def get_system_prompt(
+    kontakte: list[str] | None = None,
+    lieferanten: list[str] | None = None,
+) -> str:
     today = date.today().isoformat()
+    kontakte_section = (
+        "\n## Bekannte Kontaktnamen\n"
+        + ", ".join(kontakte)
+        + "\nNutze diese Namen für ILIKE-Filter bei Personensuchen.\n"
+        if kontakte else ""
+    )
+    lieferanten_section = (
+        "\n## Bekannte Lieferantennamen\n"
+        + ", ".join(lieferanten)
+        + "\nLieferanten sind KEINE eigene Tabelle — lieferant_name und lieferant_nr "
+        "stehen direkt als Spalten in einkaufspositionen. Niemals auf eine Tabelle "
+        "'lieferanten' joinen. Nutze ILIKE auf einkaufspositionen.lieferant_name.\n"
+        if lieferanten else ""
+    )
     return f"""Du bist ein SQL-Experte für DuckDB. Du generierst SQL-Abfragen basierend auf Nutzerfragen in natürlicher Sprache.
 
 ## Regeln
@@ -146,6 +166,11 @@ def get_system_prompt() -> str:
          sie duerfen NIEMALS als Kontext-Anker bei Folgefragen dienen.
       Das vorherige SQL sinnvoll erweitern oder umschreiben (z.B. "gruppiere das nach Monat")
 - Zahlen in Euro auf 2 Dezimalstellen runden: ROUND(wert, 2)
+- FALSCH: col IS NOT IN (...)   RICHTIG: col NOT IN (...)
+      FALSCH: col IS IN (...)       RICHTIG: col IN (...)
+      IS/IS NOT nur für NULL-Vergleiche: col IS NULL, col IS NOT NULL
+- Datumsfilter NUR einbauen wenn die Frage explizit einen Zeitraum oder ein Datum nennt.
+      Enthält die Frage KEIN Datum, KEIN "letztes Quartal", KEIN "dieses Jahr" o.ä. → KEIN WHERE auf belegdatum.
 - Bei ambigen Anfragen die naheliegendste Interpretation wählen
 - DuckDB-Funktionen statt PostgreSQL/Oracle verwenden:
     FALSCH: TO_CHAR(datum, 'YYYY-MM')  RICHTIG: strftime(datum::DATE, '%Y-%m')
@@ -157,6 +182,5 @@ def get_system_prompt() -> str:
     Kalenderformat: strftime(datum::DATE, '%Y-W%V') fuer ISO-Kalenderwoche
     Quartal: FALSCH: strftime(..., '%Y-Q%q')  RICHTIG: YEAR(belegdatum) || '-Q' || QUARTER(belegdatum)
 
-{_SCHEMA}
-
+{_SCHEMA}{kontakte_section}{lieferanten_section}
 Gib ausschließlich das SQL zurück, sonst nichts."""

@@ -44,18 +44,45 @@ EXAMPLES = [
 class _State:
     def __init__(self):
         self.model: str = os.environ.get("PLLM_MODEL", DEFAULT_MODEL)
-        self.session: ChatSession = ChatSession(model=self.model)
-        self.lock: asyncio.Lock = asyncio.Lock()
+        # Globaler Lock: Ollama läuft als einzelner Prozess, parallele Anfragen
+        # bremsen sich gegenseitig aus → alle User serialisiert, jeder bekommt
+        # volle Rechenleistung.
+        self.llm_lock: asyncio.Lock = asyncio.Lock()
 
     def swap_model(self, model: str) -> None:
         self.model = model
-        self.session = ChatSession(model=model)
-
-    def reset(self) -> None:
-        self.session.reset()
 
 
 _state = _State()
+
+# Kontaktnamen einmalig aus DuckDB laden — werden in jeden System-Prompt injiziert
+# damit das LLM Personennamen korrekt auflösen kann (ILIKE-Filter).
+def _load_kontakte() -> list[str]:
+    try:
+        df, err = db_execute("SELECT name FROM kontakte ORDER BY name")
+        if err or df is None or df.empty:
+            return []
+        return df["name"].tolist()
+    except Exception:
+        return []
+
+def _load_lieferanten() -> list[str]:
+    try:
+        df, err = db_execute(
+            "SELECT DISTINCT lieferant_name FROM einkaufspositionen ORDER BY lieferant_name"
+        )
+        if err or df is None or df.empty:
+            return []
+        return df["lieferant_name"].tolist()
+    except Exception:
+        return []
+
+_KONTAKTE: list[str] = _load_kontakte()
+_LIEFERANTEN: list[str] = _load_lieferanten()
+
+# Pro Browser-Tab eine eigene ChatSession (Konversationshistorie).
+# Cleanup beim Disconnect verhindert Memory-Leak bei langen Laufzeiten.
+_client_sessions: dict[str, ChatSession] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +216,17 @@ def _result_table(df: pd.DataFrame, container) -> None:
 @ui.page("/")
 def index(client: Client) -> None:
 
+    # Eigene Konversationshistorie pro Tab
+    _client_sessions[client.id] = ChatSession(model=_state.model, kontakte=_KONTAKTE, lieferanten=_LIEFERANTEN)
+
+    async def _cleanup() -> None:
+        _client_sessions.pop(client.id, None)
+
+    client.on_disconnect(_cleanup)
+
+    def _session() -> ChatSession:
+        return _client_sessions[client.id]
+
     async def send(question: str) -> None:
         question = question.strip()
         if not question:
@@ -220,10 +258,10 @@ def index(client: Client) -> None:
                 "text-gray-400 italic text-sm"
             )
 
-        # LLM im Thread-Pool
+        # LLM im Thread-Pool — globaler Lock serialisiert alle User-Requests
         try:
-            async with _state.lock:
-                sql = await asyncio.to_thread(_state.session.ask, question)
+            async with _state.llm_lock:
+                sql = await asyncio.to_thread(_session().ask, question)
         except Exception as exc:
             status.delete()
             with msg_col:
@@ -232,8 +270,25 @@ def index(client: Client) -> None:
             _unlock()
             return
 
+        # SQL ausführen — bei Syntaxfehler einmal automatisch korrigieren lassen
         status.set_text("SQL wird ausgefuehrt ...")
         df, error = await asyncio.to_thread(db_execute, sql)
+        retried = False
+
+        if error:
+            status.set_text("SQL-Fehler — wird korrigiert ...")
+            retry_prompt = (
+                f"[SQL-FEHLER] {error}\n"
+                "Korrigiere das SQL. Gib nur das korrigierte SQL zurück, sonst nichts."
+            )
+            try:
+                async with _state.llm_lock:
+                    sql = await asyncio.to_thread(_session().ask, retry_prompt)
+                df, error = await asyncio.to_thread(db_execute, sql)
+                retried = True
+            except Exception as exc:
+                error = str(exc)
+
         status.delete()
 
         has_data = not error and df is not None and not df.empty
@@ -241,8 +296,7 @@ def index(client: Client) -> None:
         # Ergebnis in den Konversationsverlauf einpflegen — nur so weiss das
         # Modell bei Folgefragen, welche konkreten Werte zurueckkamen.
         if has_data:
-            async with _state.lock:
-                await asyncio.to_thread(_state.session.feed_result, df)
+            _session().feed_result(df)
 
         # Bubble: erst Interpretation-Placeholder, darunter SQL-Klappe.
         # Tabelle erscheint sofort; Interpretationstext laeuft danach nach.
@@ -252,7 +306,8 @@ def index(client: Client) -> None:
                     ui.label("Zusammenfassung wird erstellt ...")
                     .classes("text-gray-400 italic text-sm animate-pulse")
                 )
-            with ui.expansion("SQL", icon="code").classes("w-full"):
+            sql_label = "SQL (korrigiert)" if retried and not error else "SQL"
+            with ui.expansion(sql_label, icon="code").classes("w-full"):
                 ui.code(sql, language="sql").classes("w-full text-sm overflow-auto").style("max-height: 200px")
 
         with result_area:
@@ -266,9 +321,10 @@ def index(client: Client) -> None:
         # Zweiter LLM-Call: Freitext-Zusammenfassung (nur wenn Daten vorhanden)
         if has_data:
             try:
-                interpretation = await asyncio.to_thread(
-                    _state.session.interpret, question, sql, df
-                )
+                async with _state.llm_lock:
+                    interpretation = await asyncio.to_thread(
+                        _session().interpret, question, sql, df
+                    )
             except Exception:
                 interpretation = None
 
@@ -293,10 +349,12 @@ def index(client: Client) -> None:
 
     def on_model_change(e) -> None:
         _state.swap_model(e.value)
+        # Neue Session mit gewähltem Modell für diesen Tab
+        _client_sessions[client.id] = ChatSession(model=e.value)
         ui.notify(f"Modell: {e.value}", type="positive", position="top-right", timeout=2000)
 
     def on_reset() -> None:
-        _state.reset()
+        _client_sessions[client.id] = ChatSession(model=_state.model, kontakte=_KONTAKTE, lieferanten=_LIEFERANTEN)
         chat_area.clear()
         with chat_area:
             _welcome_message()

@@ -53,10 +53,17 @@ def _strip_fences(text: str) -> str:
 class ChatSession:
     """Hält den Gesprächsverlauf für Follow-up-Fragen."""
 
-    def __init__(self, model: str = DEFAULT_MODEL) -> None:
+    def __init__(
+        self,
+        model: str = DEFAULT_MODEL,
+        kontakte: list[str] | None = None,
+        lieferanten: list[str] | None = None,
+    ) -> None:
         self.model = model
+        self._kontakte = kontakte
+        self._lieferanten = lieferanten
         self._messages: list[dict] = [
-            {"role": "system", "content": get_system_prompt()}
+            {"role": "system", "content": get_system_prompt(kontakte, lieferanten)}
         ]
 
     def ask(self, question: str) -> str:
@@ -105,7 +112,7 @@ class ChatSession:
         return response.message.content.strip()
 
     def reset(self) -> None:
-        self._messages = [{"role": "system", "content": get_system_prompt()}]
+        self._messages = [{"role": "system", "content": get_system_prompt(self._kontakte, self._lieferanten)}]
 
     @property
     def turn_count(self) -> int:
