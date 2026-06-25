@@ -87,6 +87,59 @@ def query(
 
 
 @app.command()
+def profile(
+    path: Path = typer.Argument(..., help="CSV-Datei oder Verzeichnis mit CSV-Dateien"),
+    out_dir: Path = typer.Option(Path("data/profiles"), "--out", "-o", help="Ausgabeverzeichnis für YAML"),
+):
+    """Analysiere CSV-Dateien und leite DuckDB-Schema + YAML-Meta-Layer ab."""
+    from src.profiler import profile_csv, profile_directory, print_profile, save_yaml
+
+    if path.is_dir():
+        console.print(f"[bold green]Profiling Verzeichnis:[/bold green] {path}\n")
+        profiles = profile_directory(path)
+    elif path.suffix.lower() == ".csv":
+        console.print(f"[bold green]Profiling:[/bold green] {path.name}\n")
+        profiles = [profile_csv(path)]
+    else:
+        console.print("[red]Pfad muss eine .csv-Datei oder ein Verzeichnis sein.[/red]")
+        raise typer.Exit(1)
+
+    for p in profiles:
+        print_profile(p)
+        out = save_yaml(p, out_dir)
+        console.print(f"  [dim]→ {out}[/dim]\n")
+
+    console.print(f"[bold green]{len(profiles)} Tabelle(n) profiliert → {out_dir}[/bold green]")
+
+
+@app.command()
+def yaml2duckdb(
+    path: Path = typer.Argument(..., help="YAML-Profildatei oder Verzeichnis mit YAML-Dateien"),
+    db: Path = typer.Option(None, "--db", help="Persistente DuckDB-Datei (z.B. data/warehouse.duckdb)"),
+    parquet: Path = typer.Option(None, "--parquet", "-p", help="Parquet-Ausgabeverzeichnis (z.B. data/parquet)"),
+):
+    """Lade YAML-Profile typisiert in DuckDB und/oder als Parquet."""
+    from src.yaml2duckdb import load_profile, load_directory
+
+    if not db and not parquet:
+        # Sinnvoller Default: Parquet ins Standard-Verzeichnis
+        parquet = Path("data/parquet")
+        console.print(f"[dim]Kein --db/--parquet angegeben — schreibe nach {parquet}[/dim]\n")
+
+    if path.is_dir():
+        console.print(f"[bold green]yaml2duckdb:[/bold green] {path}\n")
+        load_directory(path, db_path=db, parquet_dir=parquet)
+    elif path.suffix.lower() == ".yaml":
+        console.print(f"[bold green]yaml2duckdb:[/bold green] {path.name}\n")
+        load_profile(path, db_path=db, parquet_dir=parquet)
+    else:
+        console.print("[red]Pfad muss eine .yaml-Datei oder ein Verzeichnis sein.[/red]")
+        raise typer.Exit(1)
+
+    console.print("\n[bold green]Fertig.[/bold green]")
+
+
+@app.command()
 def models():
     """Listet verfügbare Ollama-Modelle auf."""
     import ollama

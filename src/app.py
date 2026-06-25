@@ -77,8 +77,24 @@ def _load_lieferanten() -> list[str]:
     except Exception:
         return []
 
-_KONTAKTE: list[str] = _load_kontakte()
-_LIEFERANTEN: list[str] = _load_lieferanten()
+def _load_profiles() -> list[dict]:
+    """Lädt YAML-Profile aus data/profiles/ wenn vorhanden."""
+    try:
+        from src.profiler import load_profiles_from_dir
+        profiles_dir = Path(__file__).parent.parent / "data" / "profiles"
+        if profiles_dir.exists():
+            profiles = load_profiles_from_dir(profiles_dir)
+            if profiles:
+                return profiles
+    except Exception:
+        pass
+    return []
+
+# Profile haben Vorrang — enthalten Schema + Value Inventories in einem.
+# Fallback auf separate DuckDB-Abfragen wenn keine Profile vorhanden.
+_PROFILES: list[dict] = _load_profiles()
+_KONTAKTE: list[str] = [] if _PROFILES else _load_kontakte()
+_LIEFERANTEN: list[str] = [] if _PROFILES else _load_lieferanten()
 
 # Pro Browser-Tab eine eigene ChatSession (Konversationshistorie).
 # Cleanup beim Disconnect verhindert Memory-Leak bei langen Laufzeiten.
@@ -217,7 +233,7 @@ def _result_table(df: pd.DataFrame, container) -> None:
 def index(client: Client) -> None:
 
     # Eigene Konversationshistorie pro Tab
-    _client_sessions[client.id] = ChatSession(model=_state.model, kontakte=_KONTAKTE, lieferanten=_LIEFERANTEN)
+    _client_sessions[client.id] = ChatSession(model=_state.model, kontakte=_KONTAKTE, lieferanten=_LIEFERANTEN, profiles=_PROFILES)
 
     async def _cleanup() -> None:
         _client_sessions.pop(client.id, None)
@@ -354,7 +370,7 @@ def index(client: Client) -> None:
         ui.notify(f"Modell: {e.value}", type="positive", position="top-right", timeout=2000)
 
     def on_reset() -> None:
-        _client_sessions[client.id] = ChatSession(model=_state.model, kontakte=_KONTAKTE, lieferanten=_LIEFERANTEN)
+        _client_sessions[client.id] = ChatSession(model=_state.model, kontakte=_KONTAKTE, lieferanten=_LIEFERANTEN, profiles=_PROFILES)
         chat_area.clear()
         with chat_area:
             _welcome_message()

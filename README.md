@@ -19,13 +19,16 @@ Follow-up-Fragen funktionieren, weil der vollständige Gesprächsverlauf inklusi
 - Natürlichsprachliche Abfragen ohne eigenen Parser
 - Lokales LLM über Ollama (kein Cloud-API-Key nötig)
 - Follow-up-Fragen durch Session-Kontext inkl. Ergebnisrückführung
+- Automatischer SQL-Retry bei Syntaxfehlern (1 Korrekturpass, transparent im UI)
 - Automatische Chart-Erkennung: Zeitreihe → Linie/Fläche, ≤7 Kategorien → Donut, sonst Balken
 - Interaktive Ergebnistabelle (sortierbar, filterbar, Pagination ab 20 Zeilen)
 - Freitext-Zusammenfassung der Ergebnisse (zweiter LLM-Pass, zustandslos)
 - Multi-User: jeder Browser-Tab bekommt eine eigene Konversationshistorie
-- Verkettetete Belegkette: Anfrage → Bestellung → Rechnung mit Preisvariation und Liefertermin
+- Verkettete Belegkette: Anfrage → Bestellung → Rechnung mit Preisvariation und Liefertermin
+- **CSV-Profiler**: analysiert CSV-Pakete, leitet DuckDB-Schema ab, schreibt YAML-Meta-Layer
+- **yaml2duckdb**: lädt YAML-Profile typisiert in DuckDB und/oder Parquet
 - Datengenerator für realistische Testdaten (Faker, `de_DE`)
-- CLI für alle Schritte: Datengenerierung, Konvertierung, Chat, direkte SQL-Abfragen
+- CLI für alle Schritte: Datengenerierung, Profiling, Konvertierung, Chat, direkte SQL-Abfragen
 
 ---
 
@@ -135,12 +138,38 @@ python cli.py chat --model gemma3
 ### CLI-Befehle
 
 ```bash
-python cli.py generate   # Testdaten als CSV erzeugen
-python cli.py convert    # CSV → Parquet
-python cli.py init       # generate + convert in einem Schritt
-python cli.py chat       # NiceGUI-Frontend starten
-python cli.py query "SELECT ..."  # SQL direkt ausführen (ohne LLM)
-python cli.py models     # Verfügbare Ollama-Modelle anzeigen
+python cli.py generate          # Testdaten als CSV erzeugen
+python cli.py convert           # CSV → Parquet (einfach, ohne Typisierung)
+python cli.py init              # generate + convert in einem Schritt
+python cli.py chat              # NiceGUI-Frontend starten
+python cli.py query "SELECT …"  # SQL direkt ausführen (ohne LLM)
+python cli.py models            # Verfügbare Ollama-Modelle anzeigen
+
+# Profiling & typisierte Konvertierung
+python cli.py profile data/csv/                          # alle CSVs analysieren → data/profiles/*.yaml
+python cli.py profile data/csv/projekte.csv              # einzelne Datei
+python cli.py yaml2duckdb data/profiles/                 # YAML → Parquet (Default: data/parquet/)
+python cli.py yaml2duckdb data/profiles/ --db data/warehouse.duckdb          # → persistente DuckDB
+python cli.py yaml2duckdb data/profiles/ --db data/warehouse.duckdb \
+                                         --parquet data/parquet/             # → beides
+```
+
+### Empfohlener Workflow mit eigenen Daten
+
+```bash
+# 1. CSV-Daten ablegen
+cp meine_daten/*.csv data/csv/
+
+# 2. Profilen — Schema ableiten, YAML schreiben
+python cli.py profile data/csv/
+
+# 3. Review: data/profiles/*.yaml prüfen und ggf. Typen anpassen
+
+# 4. Typisiert laden
+python cli.py yaml2duckdb data/profiles/ --parquet data/parquet/
+
+# 5. Chat starten
+python cli.py chat
 ```
 
 ---
@@ -154,14 +183,64 @@ project_llm/
 ├── setup.ps1               # Windows-Quickstart
 ├── src/
 │   ├── generator.py        # Faker-Datengenerator → CSV (Anfrage→Bestellung→Rechnung)
-│   ├── converter.py        # CSV → Parquet via DuckDB
+│   ├── converter.py        # CSV → Parquet via DuckDB (einfach, ohne YAML)
+│   ├── profiler.py         # CSV-Profiler: Statistiken, Schema, FK-Erkennung → YAML
+│   ├── yaml2duckdb.py      # YAML-Profile → typisierte DuckDB-Tabellen + Parquet
 │   ├── schema.py           # System-Prompt: Schema + Beispielabfragen + DuckDB-Regeln
 │   ├── db.py               # DuckDB-Views über Parquet, thread-sicher
 │   ├── llm.py              # Ollama ChatSession: ask() + feed_result() + interpret()
 │   └── app.py              # NiceGUI Chat-Frontend, Chart-Erkennung, Multi-User
 └── data/
-    ├── csv/                # Generierte CSV-Dateien  (nicht eingecheckt)
-    └── parquet/            # Konvertierte Parquet-Dateien  (nicht eingecheckt)
+    ├── csv/                # CSV-Quelldaten            (nicht eingecheckt)
+    ├── profiles/           # YAML-Meta-Layer           (nicht eingecheckt)
+    └── parquet/            # Typisierte Parquet-Dateien (nicht eingecheckt)
+```
+
+---
+
+## CSV-Profiler
+
+`pllm profile` analysiert CSV-Dateien mit DuckDB `SUMMARIZE` und schreibt pro Tabelle eine YAML-Datei mit:
+
+- abgeleitetem DuckDB-Schema inkl. `CREATE TABLE`-DDL
+- Statistiken je Spalte: Typ, Nullable, Kardinalität, Null-%, Min/Max, Mittelwert, Sample-Werte
+- Semantic Hint (`identifier` / `date` / `measure` / `dimension` / `attribute`) per Heuristik
+- FK-Kandidaten durch Namensanalyse (`projekt_nr` → `projekte`, `artikel_nr` → `artikel`)
+
+`DOUBLE` wird dabei immer als `DECIMAL` ausgegeben — in kaufmännischen Daten sind Fließkommazahlen fast immer Geldbeträge.
+
+Beispiel-YAML (`projekte.yaml`):
+
+```yaml
+table: projekte
+source: data/csv/projekte.csv
+profiled_at: '2026-06-25'
+row_count: 25
+ddl: |
+  CREATE TABLE projekte (
+    projektnummer INTEGER,
+    schlagwort VARCHAR,
+    adresse VARCHAR,
+    projektleiter_id INTEGER,
+    projekteinkäufer_id INTEGER
+  );
+columns:
+  - name: projektnummer
+    duckdb_type: INTEGER
+    nullable: false
+    unique_count: 25
+    null_pct: 0.0
+    sample: ['10001', '10002', '10003']
+    min: '10001'
+    max: '10025'
+    semantic_hint: identifier
+
+  - name: projektleiter_id
+    duckdb_type: INTEGER
+    nullable: false
+    unique_count: 12
+    semantic_hint: identifier
+    fk_candidate: kontakte
 ```
 
 ---
@@ -175,9 +254,28 @@ Jede Nutzeranfrage durchläuft zwei LLM-Calls:
 1. **SQL-Generierung** (`ask()`) — zustandsbehaftet, mit vollständigem Gesprächsverlauf. Das Modell antwortet ausschließlich mit dem SQL-Statement.
 2. **Freitext-Zusammenfassung** (`interpret()`) — zustandslos, bekommt nur Frage + Ergebnis. Liefert 2–3 Sätze mit konkreten Zahlen und Namen.
 
+### Automatischer SQL-Retry
+
+Bei einem DuckDB-Fehler wird die Fehlermeldung automatisch ans LLM zurückgegeben:
+
+```
+→ LLM:    SELECT … WHERE col IS NOT IN (…)
+→ DuckDB: Parser Error: syntax error at or near "NOT"
+→ Retry:  LLM korrigiert → SELECT … WHERE col NOT IN (…)  ✓
+```
+
+Schlägt auch der zweite Versuch fehl, erscheint der Fehler im Chat. Die SQL-Klappe zeigt `SQL (korrigiert)` wenn ein Retry erfolgreich war.
+
 ### Follow-up-Kontext
 
 Nach jeder erfolgreichen Abfrage hängt `feed_result()` eine kompakte Vorschau der zurückgegebenen Daten als `[SYSTEM-ERGEBNIS]`-Block an die letzte Assistenten-Nachricht im Verlauf. Damit kann das Modell bei Folgefragen auf konkrete Werte (z. B. Projektnummern) aus dem vorherigen Ergebnis zurückgreifen, statt auf Demo-Werte aus den Beispielabfragen zu fallen.
+
+### Value Inventories
+
+Beim App-Start werden `kontakte.name` und `einkaufspositionen.lieferant_name` aus DuckDB geladen und in jeden System-Prompt injiziert. Das verhindert zwei häufige Fehler bei kleineren Modellen:
+
+- Personennamen werden per `ILIKE` korrekt aufgelöst statt halluziniert
+- Lieferanten werden nicht fälschlicherweise als eigene Tabelle gesucht
 
 ### System-Prompt
 
@@ -186,8 +284,8 @@ Das Modell erhält:
 - vollständiges Tabellenschema inkl. Spaltentypen und Fremdschlüsseln
 - Geschäftsregeln (Vorgangskette, Überfälligkeitsdefinition, `positionswert`-Formel)
 - das heutige Datum (für relative Zeitabfragen wie *"letztes Quartal"*)
-- DuckDB-spezifische Funktionsregeln (`strftime` statt `TO_CHAR`, `ILIKE` für case-insensitive Suche, Quartal via `YEAR() || '-Q' || QUARTER()`)
-- Beispielpaare Frage → SQL für typische Muster (Subquery-Aggregation, JOINs, Datumsgruppierung, Vorgangskette)
+- DuckDB-spezifische Funktionsregeln (`strftime` statt `TO_CHAR`, `ILIKE` für case-insensitive Suche, Quartal via `YEAR() || '-Q' || QUARTER()`, `NOT IN` statt `IS NOT IN`)
+- Beispielpaare Frage → SQL für typische Muster (Subquery-Aggregation, JOINs, Datumsgruppierung, Vorgangskette, Follow-up-Kontext)
 
 ### Multi-User
 
@@ -218,9 +316,10 @@ ID-artige Spalten (`*_id`, `*_nr`, `*nummer`) werden dabei nie als Messwert inte
 
 ## Bekannte Einschränkungen
 
-- SQL-Qualität hängt vom Modell ab; komplexe Subquery-Muster gelingen `qwen2.5-coder:7b` zuverlässiger als General-Purpose-Modellen
-- Kein automatischer SQL-Retry — die Fehlermeldung erscheint im Chat und kann als Follow-up weitergegeben werden
+- SQL-Qualität hängt vom Modell ab; `qwen2.5-coder:7b` ist General-Purpose-Modellen bei komplexen Subqueries überlegen
+- Max. 1 automatischer Retry — mehrfach verschachtelte Fehler müssen manuell als Follow-up korrigiert werden
 - Konversationshistorie liegt im RAM, kein Persistence über Server-Neustarts
+- Profiler-FK-Erkennung ist namensbasiert; semantisch unbenannte FKs werden nicht erkannt
 
 ---
 

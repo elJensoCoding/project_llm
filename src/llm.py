@@ -58,12 +58,14 @@ class ChatSession:
         model: str = DEFAULT_MODEL,
         kontakte: list[str] | None = None,
         lieferanten: list[str] | None = None,
+        profiles: list[dict] | None = None,
     ) -> None:
         self.model = model
         self._kontakte = kontakte
         self._lieferanten = lieferanten
+        self._profiles = profiles
         self._messages: list[dict] = [
-            {"role": "system", "content": get_system_prompt(kontakte, lieferanten)}
+            {"role": "system", "content": get_system_prompt(kontakte, lieferanten, profiles)}
         ]
 
     def ask(self, question: str) -> str:
@@ -112,7 +114,7 @@ class ChatSession:
         return response.message.content.strip()
 
     def reset(self) -> None:
-        self._messages = [{"role": "system", "content": get_system_prompt(self._kontakte, self._lieferanten)}]
+        self._messages = [{"role": "system", "content": get_system_prompt(self._kontakte, self._lieferanten, self._profiles)}]
 
     @property
     def turn_count(self) -> int:

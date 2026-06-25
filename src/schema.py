@@ -130,8 +130,23 @@ SQL: SELECT * FROM projekte WHERE projektnummer = 10017
 def get_system_prompt(
     kontakte: list[str] | None = None,
     lieferanten: list[str] | None = None,
+    profiles: list[dict] | None = None,
 ) -> str:
     today = date.today().isoformat()
+
+    # Schema-Sektion: aus Profilen wenn vorhanden, sonst manuell gepflegtes _SCHEMA
+    if profiles:
+        from .profiler import profiles_to_prompt_section, extract_value_inventories
+        schema_section = (
+            "## Datenbankschema (aus Profildaten)\n\n"
+            + profiles_to_prompt_section(profiles)
+        )
+        inv = extract_value_inventories(profiles)
+        kontakte   = kontakte   or inv.get("kontakte")
+        lieferanten = lieferanten or inv.get("lieferanten")
+    else:
+        schema_section = _SCHEMA
+
     kontakte_section = (
         "\n## Bekannte Kontaktnamen\n"
         + ", ".join(kontakte)
@@ -182,5 +197,5 @@ def get_system_prompt(
     Kalenderformat: strftime(datum::DATE, '%Y-W%V') fuer ISO-Kalenderwoche
     Quartal: FALSCH: strftime(..., '%Y-Q%q')  RICHTIG: YEAR(belegdatum) || '-Q' || QUARTER(belegdatum)
 
-{_SCHEMA}{kontakte_section}{lieferanten_section}
+{schema_section}{kontakte_section}{lieferanten_section}
 Gib ausschließlich das SQL zurück, sonst nichts."""
