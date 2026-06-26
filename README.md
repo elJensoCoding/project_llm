@@ -154,6 +154,23 @@ python cli.py yaml2duckdb data/profiles/ --db data/warehouse.duckdb \
                                          --parquet data/parquet/             # → beides
 ```
 
+### Gegen eine persistente DuckDB testen
+
+Wer statt Parquet-Views direkt gegen eine DuckDB-Datei arbeiten will (z.B. nach `yaml2duckdb --db`):
+
+```bash
+# Windows
+set PLLM_DB=data/warehouse.duckdb
+python cli.py chat
+
+# Linux/Mac
+PLLM_DB=data/warehouse.duckdb python cli.py chat
+```
+
+Ist `PLLM_DB` gesetzt, verbindet sich `db.py` mit der Datei statt in-memory. Die Tabellen müssen dann bereits drin sein (`yaml2duckdb --db` hat sie angelegt).
+
+---
+
 ### Empfohlener Workflow mit eigenen Daten
 
 ```bash
