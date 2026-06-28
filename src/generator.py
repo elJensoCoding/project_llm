@@ -15,7 +15,7 @@ fake = Faker("de_DE")
 random.seed(42)
 Faker.seed(42)
 
-DATA_DIR = Path(__file__).parent.parent / "data" / "csv"
+_DEFAULT_CSV_DIR = Path(__file__).parent.parent / "data" / "csv"
 
 # ---------------------------------------------------------------------------
 # Kontakte
@@ -301,11 +301,11 @@ def _einkaufspositionen(
 # CSV-Writer  (None -> leer, damit DuckDB nullstr='' greift)
 # ---------------------------------------------------------------------------
 
-def _write_csv(rows: list[dict], filename: str) -> None:
+def _write_csv(rows: list[dict], filename: str, out_dir: Path) -> None:
     if not rows:
         return
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    path = DATA_DIR / filename
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / filename
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=rows[0].keys())
         writer.writeheader()
@@ -318,16 +318,18 @@ def _write_csv(rows: list[dict], filename: str) -> None:
 # ---------------------------------------------------------------------------
 
 def generate_all() -> None:
-    print("Generiere Testdaten...")
-    kontakte = _kontakte()
-    gewerke  = _gewerke()
-    artikel  = _artikel()
-    projekte = _projekte(kontakte)
+    from . import config
+    out_dir = config.csv_dir()
+    print(f"Generiere Testdaten → {out_dir}")
+    kontakte   = _kontakte()
+    gewerke    = _gewerke()
+    artikel    = _artikel()
+    projekte   = _projekte(kontakte)
     positionen = _einkaufspositionen(projekte, artikel, gewerke)
 
-    _write_csv(kontakte,   "kontakte.csv")
-    _write_csv(gewerke,    "gewerke.csv")
-    _write_csv(artikel,    "artikel.csv")
-    _write_csv(projekte,   "projekte.csv")
-    _write_csv(positionen, "einkaufspositionen.csv")
+    _write_csv(kontakte,   "kontakte.csv",           out_dir)
+    _write_csv(gewerke,    "gewerke.csv",             out_dir)
+    _write_csv(artikel,    "artikel.csv",             out_dir)
+    _write_csv(projekte,   "projekte.csv",            out_dir)
+    _write_csv(positionen, "einkaufspositionen.csv",  out_dir)
     print(f"Fertig! {len(positionen)} Positionen gesamt.")

@@ -78,10 +78,11 @@ def _load_lieferanten() -> list[str]:
         return []
 
 def _load_profiles() -> list[dict]:
-    """Lädt YAML-Profile aus data/profiles/ wenn vorhanden."""
+    """Lädt YAML-Profile aus dem konfigurierten profiles_dir wenn vorhanden."""
     try:
         from src.profiler import load_profiles_from_dir
-        profiles_dir = Path(__file__).parent.parent / "data" / "profiles"
+        from src import config
+        profiles_dir = config.profiles_dir()
         if profiles_dir.exists():
             profiles = load_profiles_from_dir(profiles_dir)
             if profiles:
@@ -451,12 +452,13 @@ def _welcome_message() -> None:
 # ---------------------------------------------------------------------------
 # Einstiegspunkt
 # ---------------------------------------------------------------------------
-def run(port: int = 8080, model: str | None = None) -> None:
+def run(port: int | None = None, model: str | None = None) -> None:
+    from src import config as cfg
     if model:
         _state.swap_model(model)
     ui.run(
-        host="127.0.0.1",
-        port=port,
+        host=cfg.host(),
+        port=port or cfg.port(),
         title="Projekt-DB Assistent",
         reload=False,
         show=True,

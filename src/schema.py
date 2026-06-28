@@ -1,6 +1,8 @@
 """System-Prompt und Schema-Beschreibung für die LLM-SQL-Generierung."""
 from datetime import date
 
+from . import config
+
 _SCHEMA = """
 ## Datenbankschema
 
@@ -70,7 +72,11 @@ Eine Bestellung gilt als UEBERFAELLIG wenn:
 - einkaufspositionen.artikel_nr → artikel.nummer
 - einkaufspositionen.gewerk_id → gewerke.gewerk_id
 - einkaufspositionen.projekt_nr → projekte.projektnummer
+"""
 
+# Eingebaute Beispiele als Fallback wenn keine Config-Beispiele vorhanden.
+# Bei neuen Domänen werden diese durch prompt.examples in pllm_config.yaml ersetzt.
+_BUILTIN_EXAMPLES = """
 ## Beispiele (Frage → erwartetes SQL)
 
 Frage: Alle Projekte anzeigen
@@ -103,17 +109,8 @@ SQL: SELECT lieferant_name, ROUND(AVG(rabatt) * 100, 1) AS avg_rabatt_pct, COUNT
 Frage: Durchschnittlicher Bestellwert pro Monat
 SQL: SELECT monat, ROUND(AVG(total), 2) AS avg_bestellwert FROM (SELECT belegnummer, DATE_TRUNC('month', MIN(belegdatum)) AS monat, SUM(positionswert) AS total FROM einkaufspositionen WHERE typ = 'Bestellung' GROUP BY belegnummer) t GROUP BY monat ORDER BY monat
 
-Frage: Durchschnittlicher Rechnungswert pro Projekt
-SQL: SELECT projekt_nr, ROUND(AVG(total), 2) AS avg_rechnungswert FROM (SELECT belegnummer, projekt_nr, SUM(positionswert) AS total FROM einkaufspositionen WHERE typ = 'Rechnung' GROUP BY belegnummer, projekt_nr) t GROUP BY projekt_nr ORDER BY avg_rechnungswert DESC
-
-Frage: Bestellungen pro Woche im Januar 2025
-SQL: SELECT strftime(DATE_TRUNC('week', belegdatum::DATE), '%Y-W%V') AS woche, COUNT(DISTINCT belegnummer) AS bestellungen, ROUND(SUM(positionswert), 2) AS volumen FROM einkaufspositionen WHERE typ = 'Bestellung' AND belegdatum::DATE >= '2025-01-01' AND belegdatum::DATE < '2025-02-01' GROUP BY woche ORDER BY woche
-
 Frage: Alle ueberfaelligen Bestellungen (Liefertermin vergangen, noch keine Rechnung)
 SQL: SELECT b.belegnummer, b.belegdatum, b.liefertermin, b.lieferant_name, b.projekt_nr, DATEDIFF('day', b.liefertermin::DATE, CURRENT_DATE) AS tage_ueberfaellig, ROUND(SUM(b.positionswert), 2) AS bestellwert FROM einkaufspositionen b WHERE b.typ = 'Bestellung' AND b.liefertermin::DATE < CURRENT_DATE AND b.belegnummer NOT IN (SELECT referenz_belegnummer FROM einkaufspositionen WHERE typ = 'Rechnung' AND referenz_belegnummer IS NOT NULL) GROUP BY b.belegnummer, b.belegdatum, b.liefertermin, b.lieferant_name, b.projekt_nr ORDER BY b.liefertermin
-
-Frage: Ueberfaellige Bestellungen fuer Projekt 10001
-SQL: SELECT b.belegnummer, b.belegdatum, b.liefertermin, b.lieferant_name, DATEDIFF('day', b.liefertermin::DATE, CURRENT_DATE) AS tage_ueberfaellig, ROUND(SUM(b.positionswert), 2) AS bestellwert FROM einkaufspositionen b WHERE b.typ = 'Bestellung' AND b.projekt_nr = 10001 AND b.liefertermin::DATE < CURRENT_DATE AND b.belegnummer NOT IN (SELECT referenz_belegnummer FROM einkaufspositionen WHERE typ = 'Rechnung' AND referenz_belegnummer IS NOT NULL) GROUP BY b.belegnummer, b.belegdatum, b.liefertermin, b.lieferant_name ORDER BY b.liefertermin
 
 Frage: Vorgangskette Anfrage Bestellung Rechnung mit Status fuer ein Projekt
 SQL: SELECT a.belegnummer AS anfrage_nr, a.belegdatum AS anfrage_datum, b.belegnummer AS bestell_nr, b.belegdatum AS bestell_datum, b.liefertermin, r.belegnummer AS rechnung_nr, CASE WHEN r.belegnummer IS NOT NULL THEN 'Abgerechnet' WHEN b.belegnummer IS NULL THEN 'Nur Anfrage' WHEN b.liefertermin::DATE < CURRENT_DATE THEN 'Ueberfaellig' ELSE 'Offen' END AS status FROM (SELECT DISTINCT belegnummer, belegdatum, projekt_nr FROM einkaufspositionen WHERE typ = 'Anfrage') a LEFT JOIN (SELECT DISTINCT belegnummer, belegdatum, liefertermin, referenz_belegnummer FROM einkaufspositionen WHERE typ = 'Bestellung') b ON b.referenz_belegnummer = a.belegnummer LEFT JOIN (SELECT DISTINCT belegnummer, referenz_belegnummer FROM einkaufspositionen WHERE typ = 'Rechnung') r ON r.referenz_belegnummer = b.belegnummer WHERE a.projekt_nr = 10001 ORDER BY a.belegnummer
@@ -125,6 +122,31 @@ SQL: SELECT p.projektnummer, p.schlagwort, p.adresse, k.name AS projekteinkäufe
 Folgefrage: Zeig das Projekt.
 SQL: SELECT * FROM projekte WHERE projektnummer = 10017
 """
+
+
+def _extra_rules_section() -> str:
+    rules = config.extra_rules()
+    if not rules:
+        return ""
+    lines = "\n".join(f"- {r}" for r in rules)
+    return f"\n## Zusätzliche Regeln (aus Konfiguration)\n{lines}\n"
+
+
+def _examples_section() -> str:
+    """Config-Beispiele haben Vorrang — sonst eingebaute Demo-Beispiele als Fallback."""
+    examples = config.prompt_examples()
+    if examples:
+        lines = []
+        for ex in examples:
+            entry = f"Frage: {ex['q']}\nSQL: {ex['sql'].strip()}"
+            # Optionales Follow-up (Kontext + Folgefrage)
+            if ex.get("context"):
+                entry += f"\n{ex['context']}"
+            if ex.get("followup_q"):
+                entry += f"\nFolgefrage: {ex['followup_q']}\nSQL: {ex['followup_sql'].strip()}"
+            lines.append(entry)
+        return "\n## Beispiele (Frage → erwartetes SQL)\n\n" + "\n\n".join(lines) + "\n"
+    return _BUILTIN_EXAMPLES
 
 
 def get_system_prompt(
@@ -161,7 +183,8 @@ def get_system_prompt(
         "'lieferanten' joinen. Nutze ILIKE auf einkaufspositionen.lieferant_name.\n"
         if lieferanten else ""
     )
-    return f"""Du bist ein SQL-Experte für DuckDB. Du generierst SQL-Abfragen basierend auf Nutzerfragen in natürlicher Sprache.
+    _role = config.system_role() or "Du bist ein SQL-Experte für DuckDB. Du generierst SQL-Abfragen basierend auf Nutzerfragen in natürlicher Sprache."
+    return f"""{_role}
 
 ## Regeln
 - Antworte NUR mit dem SQL-Statement — keine Erklärungen, kein Markdown, keine Codeblöcke
@@ -197,5 +220,5 @@ def get_system_prompt(
     Kalenderformat: strftime(datum::DATE, '%Y-W%V') fuer ISO-Kalenderwoche
     Quartal: FALSCH: strftime(..., '%Y-Q%q')  RICHTIG: YEAR(belegdatum) || '-Q' || QUARTER(belegdatum)
 
-{schema_section}{kontakte_section}{lieferanten_section}
+{schema_section}{kontakte_section}{lieferanten_section}{_extra_rules_section()}{_examples_section()}
 Gib ausschließlich das SQL zurück, sonst nichts."""

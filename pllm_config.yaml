@@ -1,0 +1,142 @@
+# pllm_config.yaml — Konfiguration für den Projekt-LLM Assistenten
+# Alle Felder sind optional — nicht gesetzte Werte verwenden Defaults.
+version: 1
+
+database:
+  # Persistente DuckDB-Datei (null = in-memory + Parquet-Views aus parquet_dir)
+  path: null
+  # path: data/warehouse.duckdb
+
+  # CSV-Quelldaten
+  csv_dir: data/csv
+
+  # Verzeichnis mit Parquet-Dateien (für in-memory Modus)
+  parquet_dir: data/parquet
+
+  # Verzeichnis mit YAML-Profilen (für Schema-Injection in LLM-Prompt)
+  profiles_dir: data/profiles
+
+llm:
+  # Ollama-Modell — qwen2.5-coder:7b empfohlen für SQL-Qualität
+  model: qwen2.5-coder:7b
+  # Alternativen: gemma3, qwen3:4b, llama3.1:8b
+
+app:
+  port: 8080
+  host: 127.0.0.1
+
+prompt:
+  # Einstiegstext des System-Prompts (überschreibt den eingebauten Default)
+  system_role: null
+  # Beispiel für eine andere Domäne:
+  # system_role: >
+  #   Du bist ein SQL-Experte für DuckDB. Du generierst SQL-Abfragen für eine
+  #   Logistik-Datenbank mit Sendungen, Routen und Fahrzeugen.
+
+  # Zusätzliche Regeln die an den Standard-Prompt angehängt werden
+  extra_rules: []
+  # Beispiel:
+  # extra_rules:
+  #   - "Beträge immer in Euro mit 2 Dezimalstellen ausgeben"
+  #   - "Projektnummern immer mit führenden Nullen auf 5 Stellen"
+
+  # Domänenspezifische Beispiel-Queries (ersetzen die eingebauten Demo-Beispiele)
+  # Felder: q (Frage), sql (SQL), optional: context + followup_q + followup_sql
+  examples:
+    - q: "Alle Projekte anzeigen"
+      sql: "SELECT projektnummer, schlagwort, adresse FROM projekte ORDER BY projektnummer"
+
+    - q: "Alle Bestellungen für Projekt 10001"
+      sql: >
+        SELECT belegnummer, belegdatum, position, menge, preis, positionswert, lieferant_name
+        FROM einkaufspositionen
+        WHERE projekt_nr = 10001 AND typ = 'Bestellung'
+        ORDER BY belegnummer, position
+
+    - q: "Gesamtwert aller Rechnungen pro Projekt"
+      sql: >
+        SELECT p.projektnummer, p.schlagwort, SUM(e.positionswert) AS rechnungssumme
+        FROM einkaufspositionen e
+        JOIN projekte p ON e.projekt_nr = p.projektnummer
+        WHERE e.typ = 'Rechnung'
+        GROUP BY p.projektnummer, p.schlagwort
+        ORDER BY rechnungssumme DESC
+
+    - q: "Top 5 Lieferanten nach Bestellvolumen"
+      sql: >
+        SELECT lieferant_name, COUNT(DISTINCT belegnummer) AS anzahl_belege,
+               SUM(positionswert) AS volumen
+        FROM einkaufspositionen
+        WHERE typ = 'Bestellung'
+        GROUP BY lieferant_name
+        ORDER BY volumen DESC LIMIT 5
+
+    - q: "Rechnungen nach Monat gruppiert"
+      sql: >
+        SELECT DATE_TRUNC('month', belegdatum) AS monat,
+               COUNT(DISTINCT belegnummer) AS anzahl_belege,
+               SUM(positionswert) AS summe
+        FROM einkaufspositionen
+        WHERE typ = 'Rechnung'
+        GROUP BY monat ORDER BY monat
+
+    - q: "Bestellungen im Gewerk Elektro im letzten Quartal"
+      sql: >
+        SELECT e.belegnummer, e.belegdatum, e.lieferant_name, g.name AS gewerk, e.positionswert
+        FROM einkaufspositionen e
+        JOIN gewerke g ON e.gewerk_id = g.gewerk_id
+        WHERE g.name = 'Elektro' AND e.typ = 'Bestellung'
+          AND e.belegdatum >= CURRENT_DATE - INTERVAL '3 months'
+        ORDER BY e.belegdatum DESC
+
+    - q: "Projektleiter und Einkäufer pro Projekt"
+      sql: >
+        SELECT p.projektnummer, p.schlagwort, kl.name AS projektleiter, ke.name AS projekteinkäufer
+        FROM projekte p
+        JOIN kontakte kl ON p.projektleiter_id = kl.kontakt_id
+        JOIN kontakte ke ON p."projekteinkäufer_id" = ke.kontakt_id
+
+    - q: "Welche Belegtypen erstellt Yvette Otto am häufigsten?"
+      sql: >
+        SELECT e.typ, COUNT(DISTINCT e.belegnummer) AS anzahl
+        FROM einkaufspositionen e
+        JOIN projekte p ON e.projekt_nr = p.projektnummer
+        JOIN kontakte k ON p."projekteinkäufer_id" = k.kontakt_id
+        WHERE k.name ILIKE '%Yvette Otto%'
+        GROUP BY e.typ ORDER BY anzahl DESC
+
+    - q: "Durchschnittlicher Bestellwert pro Monat"
+      sql: >
+        SELECT monat, ROUND(AVG(total), 2) AS avg_bestellwert
+        FROM (
+          SELECT belegnummer, DATE_TRUNC('month', MIN(belegdatum)) AS monat,
+                 SUM(positionswert) AS total
+          FROM einkaufspositionen WHERE typ = 'Bestellung'
+          GROUP BY belegnummer
+        ) t
+        GROUP BY monat ORDER BY monat
+
+    - q: "Alle ueberfaelligen Bestellungen"
+      sql: >
+        SELECT b.belegnummer, b.belegdatum, b.liefertermin, b.lieferant_name, b.projekt_nr,
+               DATEDIFF('day', b.liefertermin::DATE, CURRENT_DATE) AS tage_ueberfaellig,
+               ROUND(SUM(b.positionswert), 2) AS bestellwert
+        FROM einkaufspositionen b
+        WHERE b.typ = 'Bestellung'
+          AND b.liefertermin::DATE < CURRENT_DATE
+          AND b.belegnummer NOT IN (
+            SELECT referenz_belegnummer FROM einkaufspositionen
+            WHERE typ = 'Rechnung' AND referenz_belegnummer IS NOT NULL
+          )
+        GROUP BY b.belegnummer, b.belegdatum, b.liefertermin, b.lieferant_name, b.projekt_nr
+        ORDER BY b.liefertermin
+
+    - q: "Gib mir die Adresse zu dem Projekt, wo xxx yyy Projekteinkäufer ist."
+      sql: >
+        SELECT p.projektnummer, p.schlagwort, p.adresse, k.name AS projekteinkäufer
+        FROM projekte p
+        JOIN kontakte k ON p."projekteinkäufer_id" = k.kontakt_id
+        WHERE k.name ILIKE '%xxx yyy%'
+      context: "[SYSTEM-ERGEBNIS: projektnummer=10017, schlagwort=Rohstoff Neubau, adresse=Hauptstr. 5 Hamburg, projekteinkäufer=xxx yyy]"
+      followup_q: "Zeig das Projekt."
+      followup_sql: "SELECT * FROM projekte WHERE projektnummer = 10017"

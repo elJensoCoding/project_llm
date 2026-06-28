@@ -5,8 +5,7 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-PARQUET_DIR = Path(__file__).parent.parent / "data" / "parquet"
-TABLES = ["kontakte", "gewerke", "artikel", "projekte", "einkaufspositionen"]
+from . import config
 
 _con: duckdb.DuckDBPyConnection | None = None
 _lock = threading.Lock()
@@ -16,20 +15,25 @@ def _connect() -> duckdb.DuckDBPyConnection:
     global _con
     if _con is not None:
         return _con
-    _con = duckdb.connect()
-    missing = []
-    for table in TABLES:
-        path = PARQUET_DIR / f"{table}.parquet"
-        if path.exists():
-            _con.execute(
-                f"CREATE OR REPLACE VIEW {table} AS SELECT * FROM read_parquet('{path.as_posix()}')"
+
+    db = config.db_path()
+    if db:
+        # Persistente DuckDB — Tabellen bereits vorhanden
+        _con = duckdb.connect(db)
+    else:
+        # In-memory + Parquet-Views
+        _con = duckdb.connect()
+        parquet_dir = config.parquet_dir()
+        parquet_files = sorted(parquet_dir.glob("*.parquet"))
+        if not parquet_files:
+            raise FileNotFoundError(
+                f"Keine Parquet-Dateien in {parquet_dir}. Bitte 'pllm init' ausführen."
             )
-        else:
-            missing.append(table)
-    if missing:
-        raise FileNotFoundError(
-            f"Parquet-Dateien fehlen: {missing}. Bitte 'pllm init' ausführen."
-        )
+        for path in parquet_files:
+            _con.execute(
+                f"CREATE OR REPLACE VIEW {path.stem} AS "
+                f"SELECT * FROM read_parquet('{path.as_posix()}')"
+            )
     return _con
 
 

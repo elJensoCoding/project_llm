@@ -22,6 +22,20 @@ app = typer.Typer(
 console = Console()
 
 
+@app.callback()
+def main(
+    config: Path = typer.Option(
+        None, "--config", "-c",
+        help="Konfigurationsdatei (Standard: pllm_config.yaml im aktuellen Verzeichnis)",
+    ),
+):
+    """Lädt die Konfiguration vor allen Befehlen."""
+    from src.config import load
+    cfg = load(config)
+    if config and config.exists():
+        console.print(f"[dim]Konfiguration geladen: {config}[/dim]")
+
+
 @app.command()
 def generate():
     """Generiere Testdaten als CSV-Dateien."""
@@ -88,11 +102,15 @@ def query(
 
 @app.command()
 def profile(
-    path: Path = typer.Argument(..., help="CSV-Datei oder Verzeichnis mit CSV-Dateien"),
-    out_dir: Path = typer.Option(Path("data/profiles"), "--out", "-o", help="Ausgabeverzeichnis für YAML"),
+    path: Path = typer.Argument(None, help="CSV-Datei oder Verzeichnis (Default: csv_dir aus Config)"),
+    out_dir: Path = typer.Option(None, "--out", "-o", help="Ausgabeverzeichnis für YAML (Default: profiles_dir aus Config)"),
 ):
     """Analysiere CSV-Dateien und leite DuckDB-Schema + YAML-Meta-Layer ab."""
     from src.profiler import profile_csv, profile_directory, print_profile, save_yaml
+    from src import config as cfg
+
+    path    = path    or cfg.csv_dir()
+    out_dir = out_dir or cfg.profiles_dir()
 
     if path.is_dir():
         console.print(f"[bold green]Profiling Verzeichnis:[/bold green] {path}\n")
@@ -120,10 +138,10 @@ def yaml2duckdb(
 ):
     """Lade YAML-Profile typisiert in DuckDB und/oder als Parquet."""
     from src.yaml2duckdb import load_profile, load_directory
+    from src import config as cfg
 
     if not db and not parquet:
-        # Sinnvoller Default: Parquet ins Standard-Verzeichnis
-        parquet = Path("data/parquet")
+        parquet = cfg.parquet_dir()
         console.print(f"[dim]Kein --db/--parquet angegeben — schreibe nach {parquet}[/dim]\n")
 
     if path.is_dir():
