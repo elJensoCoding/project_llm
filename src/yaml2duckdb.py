@@ -16,79 +16,126 @@ def _load_yaml(path: Path) -> dict:
 
 
 def _quote(name: str) -> str:
-    """Quoted einen Spaltennamen wenn nötig (Umlaute, Leerzeichen, Sonderzeichen)."""
-    needs_quoting = any(c in name for c in "äöüÄÖÜß -./") or name[0].isdigit()
-    return f'"{name}"' if needs_quoting else name
+    """Quoted SQL-Identifier sicher für DuckDB."""
+    escaped = str(name).replace('"', '""')
+    return f'"{escaped}"'
+
+
+def _sql_str(value: str) -> str:
+    """Escaped SQL-String-Literal."""
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 def _col_cast_expr(col: dict) -> str:
-    """Baut einen CAST-Ausdruck für eine Spalte — stellt korrekte Typen sicher."""
+    """Baut einen CAST-Ausdruck für eine Spalte."""
     q = _quote(col["name"])
     return f"CAST({q} AS {col['duckdb_type']}) AS {q}"
 
 
-def _find_pk(profiles: list[dict], table_name: str) -> str | None:
-    """Findet den wahrscheinlichsten PK einer Tabelle (höchste Unique-Rate unter Identifiers)."""
-    for p in profiles:
-        if p["table"] == table_name:
-            row_count = max(p.get("row_count", 1), 1)
-            best_col, best_ratio = None, 0.0
-            for col in p["columns"]:
-                if col.get("semantic_hint") == "identifier":
-                    ratio = col.get("unique_count", 0) / row_count
-                    if ratio > best_ratio:
-                        best_ratio = ratio
-                        best_col = col["name"]
-            return best_col
-    return None
+def _sort_profiles_by_fk_dependencies(profiles: list[dict]) -> list[dict]:
+    """
+    Sortiert Profile anhand semantischer FK-Kandidaten.
+
+    Wichtig:
+    Es werden KEINE physischen FK-Constraints erzeugt.
+    Die Sortierung dient nur einer nachvollziehbaren Lade-/Debug-Reihenfolge.
+    """
+    by_table = {p["table"]: p for p in profiles}
+
+    deps = {
+        p["table"]: {
+            col["fk_candidate"]
+            for col in p.get("columns", [])
+            if col.get("fk_candidate") in by_table
+            and col.get("fk_candidate") != p["table"]
+        }
+        for p in profiles
+    }
+
+    result: list[dict] = []
+    temporary: set[str] = set()
+    permanent: set[str] = set()
+
+    def visit(table: str) -> None:
+        if table in permanent:
+            return
+
+        if table in temporary:
+            raise ValueError(f"Zyklische FK-Abhängigkeit erkannt bei Tabelle: {table}")
+
+        temporary.add(table)
+
+        for dep in sorted(deps[table]):
+            visit(dep)
+
+        temporary.remove(table)
+        permanent.add(table)
+        result.append(by_table[table])
+
+    for table in sorted(by_table):
+        visit(table)
+
+    return result
 
 
-def _build_create_with_fks(profile: dict, all_profiles: list[dict]) -> str:
-    """Baut CREATE TABLE DDL inkl. FK REFERENCES (von DuckDB geparst, nicht enforced)."""
+def _build_create_table(profile: dict) -> str:
+    """
+    Baut CREATE TABLE ohne Constraints.
+
+    PK/FK bleiben semantisch im YAML.
+    DuckDB wird hier bewusst als Analytics-Layer verwendet.
+    """
     table = profile["table"]
     parts = []
-    for col in profile["columns"]:
-        name     = col["name"]
-        dtype    = col["duckdb_type"]
-        not_null = "" if col.get("nullable") else " NOT NULL"
-        fk_ref   = ""
-        if col.get("fk_candidate"):
-            pk = _find_pk(all_profiles, col["fk_candidate"])
-            if pk:
-                fk_ref = f" REFERENCES {col['fk_candidate']}({pk})"
-        parts.append(f"  {name} {dtype}{not_null}{fk_ref}")
-    return f"CREATE TABLE {table} (\n" + ",\n".join(parts) + "\n);"
+
+    for col in profile.get("columns", []):
+        name = col["name"]
+        dtype = col["duckdb_type"]
+        parts.append(f"  {_quote(name)} {dtype}")
+
+    return f"CREATE TABLE {_quote(table)} (\n" + ",\n".join(parts) + "\n);"
 
 
 def _load_single(
     profile: dict,
-    all_profiles: list[dict],
     con: duckdb.DuckDBPyConnection,
     parquet_dir: Path | None,
 ) -> None:
     """Lädt ein einzelnes Profil in die bereits geöffnete Verbindung."""
-    table  = profile["table"]
+    table = profile["table"]
     source = Path(profile["source"])
 
     if not source.exists():
         console.print(f"  [red]CSV nicht gefunden:[/red] {source}")
         return
 
-    casts  = ", ".join(_col_cast_expr(c) for c in profile["columns"])
-    select = f"SELECT {casts} FROM read_csv_auto('{source.as_posix()}', nullstr='')"
-    ddl    = _build_create_with_fks(profile, all_profiles)
+    columns = profile.get("columns", [])
 
-    con.execute(f"DROP TABLE IF EXISTS {table}")
+    if not columns:
+        console.print(f"  [yellow]⚠[/yellow] {table}: keine Spalten im Profil gefunden")
+        return
+
+    casts = ", ".join(_col_cast_expr(c) for c in columns)
+    src = _sql_str(source.as_posix())
+
+    select = f"SELECT {casts} FROM read_csv_auto({src}, nullstr='')"
+    ddl = _build_create_table(profile)
+
     con.execute(ddl)
-    con.execute(f"INSERT INTO {table} {select}")
+    con.execute(f"INSERT INTO {_quote(table)} {select}")
 
-    row_count = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    row_count = con.execute(f"SELECT COUNT(*) FROM {_quote(table)}").fetchone()[0]
     console.print(f"  [green]✓[/green] {table:30s} {row_count:>7,} Zeilen  →  DuckDB")
 
     if parquet_dir:
         parquet_dir.mkdir(parents=True, exist_ok=True)
         dst = (parquet_dir / f"{table}.parquet").as_posix()
-        con.execute(f"COPY (SELECT * FROM {table}) TO '{dst}' (FORMAT PARQUET)")
+
+        con.execute(
+            f"COPY (SELECT * FROM {_quote(table)}) "
+            f"TO {_sql_str(dst)} (FORMAT PARQUET)"
+        )
+
         console.print(f"  {'':32s}             →  {dst}")
 
 
@@ -96,14 +143,21 @@ def load_profile(
     yaml_path: Path,
     db_path: Path | None = None,
     parquet_dir: Path | None = None,
-    all_profiles: list[dict] | None = None,
 ) -> None:
     """Lädt eine einzelne YAML-Profildatei in DuckDB und/oder Parquet."""
-    profile      = _load_yaml(yaml_path)
-    all_profiles = all_profiles or [profile]
-    con          = duckdb.connect(str(db_path)) if db_path else duckdb.connect()
-    _load_single(profile, all_profiles, con, parquet_dir)
-    con.close()
+    profile = _load_yaml(yaml_path)
+
+    if not profile or not profile.get("table"):
+        console.print(f"[red]Ungültiges Profil:[/red] {yaml_path}")
+        return
+
+    con = duckdb.connect(str(db_path)) if db_path else duckdb.connect()
+
+    try:
+        con.execute(f"DROP TABLE IF EXISTS {_quote(profile['table'])}")
+        _load_single(profile, con, parquet_dir)
+    finally:
+        con.close()
 
 
 def load_directory(
@@ -111,16 +165,37 @@ def load_directory(
     db_path: Path | None = None,
     parquet_dir: Path | None = None,
 ) -> None:
-    """Lädt alle YAML-Profile — FK REFERENCES werden tabellenübergreifend aufgelöst."""
-    yamls = [y for y in sorted(profiles_dir.glob("*.yaml"))]
+    """Lädt alle YAML-Profile aus einem Verzeichnis."""
+    yamls = sorted(profiles_dir.glob("*.yaml"))
+
     if not yamls:
         console.print(f"[red]Keine YAML-Dateien in {profiles_dir}[/red]")
         return
 
-    # Alle Profile einlesen damit FK-Auflösung tabellenübergreifend funktioniert
-    all_profiles = [_load_yaml(y) for y in yamls if _load_yaml(y).get("table")]
+    all_profiles: list[dict] = []
+
+    for y in yamls:
+        profile = _load_yaml(y)
+        if profile and profile.get("table"):
+            all_profiles.append(profile)
+
+    all_profiles = _sort_profiles_by_fk_dependencies(all_profiles)
+
+    console.print(
+        "[dim]Ladereihenfolge:[/dim] "
+        + " → ".join(p["table"] for p in all_profiles)
+    )
 
     con = duckdb.connect(str(db_path)) if db_path else duckdb.connect()
-    for profile in all_profiles:
-        _load_single(profile, all_profiles, con, parquet_dir)
-    con.close()
+
+    try:
+        # Ohne physische FKs wäre die Reihenfolge beim DROP egal,
+        # reversed bleibt aber sauber und zukunftssicher.
+        for profile in reversed(all_profiles):
+            con.execute(f"DROP TABLE IF EXISTS {_quote(profile['table'])}")
+
+        for profile in all_profiles:
+            _load_single(profile, con, parquet_dir)
+
+    finally:
+        con.close()

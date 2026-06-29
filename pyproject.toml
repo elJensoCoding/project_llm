@@ -2,7 +2,7 @@
 name = "project-llm"
 version = "0.1.0"
 description = "Projekt-Datenbank mit lokalem LLM-Chat"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "duckdb>=1.1.0",
     "pandas>=2.0.0",
