@@ -146,6 +146,14 @@ def _load_single(
     row_count = con.execute(f"SELECT COUNT(*) FROM {_quote(table)}").fetchone()[0]
     console.print(f"  [green]✓[/green] {table:30s} {row_count:>7,} Zeilen  →  DuckDB")
 
+    # Sentinel-Werte auf NULL setzen (null_values aus Profil)
+    for col in columns:
+        for nv in col.get("null_values", []):
+            con.execute(
+                f"UPDATE {_quote(table)} SET {_quote(col['name'])} = NULL "
+                f"WHERE {_quote(col['name'])} = {_sql_str(nv)}"
+            )
+
     if parquet_dir:
         parquet_dir.mkdir(parents=True, exist_ok=True)
         dst = (parquet_dir / f"{table}.parquet").as_posix()

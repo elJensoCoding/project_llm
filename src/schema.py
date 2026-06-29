@@ -228,6 +228,7 @@ def get_system_prompt(
     Jahr/Monat extrahieren: YEAR(belegdatum), MONTH(belegdatum)
     Kalenderformat: strftime(datum::DATE, '%Y-W%V') fuer ISO-Kalenderwoche
     Quartal: FALSCH: strftime(..., '%Y-Q%q')  RICHTIG: YEAR(belegdatum) || '-Q' || QUARTER(belegdatum)
+    Differenz in Tagen: FALSCH: DATE_PART('day', date1 - date2)  RICHTIG: DATEDIFF('day', date1, date2)
 
 {schema_section}{kontakte_section}{lieferanten_section}{_extra_rules_section()}{_examples_section()}
 Gib ausschließlich das SQL zurück, sonst nichts."""
