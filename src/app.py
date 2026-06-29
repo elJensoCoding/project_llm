@@ -353,6 +353,25 @@ def index(client: Client) -> None:
             else:
                 interp_label.delete()
 
+        # Query loggen + Feedback-Button
+        from src.query_log import log as qlog, flag as qflag
+        entry_id = qlog(
+            question=question,
+            sql=sql,
+            error=error,
+            rows=len(df) if has_data else 0,
+            retried=retried,
+        )
+
+        with msg_col:
+            def _on_flag(eid=entry_id) -> None:
+                qflag(eid)
+                ui.notify("Als fehlerhaft markiert", type="warning",
+                          position="top-right", timeout=2000)
+            ui.button(icon="thumb_down", on_click=_on_flag).props(
+                "flat dense round size=sm color=grey"
+            ).tooltip("Query als fehlerhaft markieren")
+
         await client.run_javascript(
             "window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'})"
         )

@@ -158,6 +158,47 @@ def yaml2duckdb(
 
 
 @app.command()
+def log(
+    flagged: bool = typer.Option(False, "--flagged", "-f", help="Nur als fehlerhaft markierte Einträge zeigen"),
+):
+    """Zeigt den Query-Log. Mit --flagged nur fehlerhafte Einträge."""
+    from src.query_log import read_all
+    entries = read_all(only_flagged=flagged)
+    if not entries:
+        console.print("[yellow]Keine Einträge im Log.[/yellow]")
+        return
+
+    table = Table(
+        "Zeit", "Frage", "Fehler", "Zeilen", "Retry", "Flag",
+        header_style="bold cyan", show_lines=True
+    )
+    for e in entries:
+        flag_mark = "[red]✗[/red]" if e.get("flagged") else ""
+        err_short = (e["error"] or "")[:50]
+        table.add_row(
+            e["ts"],
+            e["question"][:60],
+            err_short,
+            str(e["rows"]),
+            "✓" if e["retried"] else "",
+            flag_mark,
+        )
+    console.print(table)
+    console.print(f"\n[dim]{len(entries)} Eintrag/Einträge{' (geflaggt)' if flagged else ''}[/dim]")
+
+    # Geflaggte Queries als Rohdaten ausgeben — direkt zum Einbauen als Beispiele
+    if not flagged:
+        flagged_entries = [e for e in entries if e.get("flagged")]
+        if flagged_entries:
+            console.print(f"\n[bold yellow]{len(flagged_entries)} als fehlerhaft markiert:[/bold yellow]")
+            for e in flagged_entries:
+                console.print(f"\n[cyan]Frage:[/cyan] {e['question']}")
+                console.print(f"[red]SQL:[/red] {e['sql']}")
+                if e["error"]:
+                    console.print(f"[red]Fehler:[/red] {e['error']}")
+
+
+@app.command()
 def prompt():
     """Gibt den aktuellen System-Prompt inkl. Schema und Value Inventories aus."""
     from src.profiler import load_profiles_from_dir
