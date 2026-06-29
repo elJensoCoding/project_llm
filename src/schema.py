@@ -153,36 +153,48 @@ def get_system_prompt(
     kontakte: list[str] | None = None,
     lieferanten: list[str] | None = None,
     profiles: list[dict] | None = None,
+    value_inventories: list[dict] | None = None,
 ) -> str:
     today = date.today().isoformat()
 
     # Schema-Sektion: aus Profilen wenn vorhanden, sonst manuell gepflegtes _SCHEMA
     if profiles:
-        from .profiler import profiles_to_prompt_section, extract_value_inventories
+        from .profiler import profiles_to_prompt_section
         schema_section = (
             "## Datenbankschema (aus Profildaten)\n\n"
             + profiles_to_prompt_section(profiles)
         )
-        inv = extract_value_inventories(profiles)
-        kontakte   = kontakte   or inv.get("kontakte")
-        lieferanten = lieferanten or inv.get("lieferanten")
     else:
         schema_section = _SCHEMA
 
-    kontakte_section = (
-        "\n## Bekannte Kontaktnamen\n"
-        + ", ".join(kontakte)
-        + "\nNutze diese Namen für ILIKE-Filter bei Personensuchen.\n"
-        if kontakte else ""
-    )
-    lieferanten_section = (
-        "\n## Bekannte Lieferantennamen\n"
-        + ", ".join(lieferanten)
-        + "\nLieferanten sind KEINE eigene Tabelle — lieferant_name und lieferant_nr "
-        "stehen direkt als Spalten in einkaufspositionen. Niemals auf eine Tabelle "
-        "'lieferanten' joinen. Nutze ILIKE auf einkaufspositionen.lieferant_name.\n"
-        if lieferanten else ""
-    )
+    # Dynamische Value Inventories (aus DB zur Laufzeit) haben Vorrang
+    # Legacy-Fallback auf statische kontakte/lieferanten-Listen
+    if value_inventories:
+        inv_lines = []
+        for inv in value_inventories:
+            values_str = ", ".join(str(v) for v in inv["values"])
+            block = f"### {inv['label']}\n{values_str}"
+            if inv.get("hint"):
+                block += f"\n→ {inv['hint']}"
+            inv_lines.append(block)
+        kontakte_section = "\n## Stammdaten (zur Laufzeit aus DB geladen)\n\n" + "\n\n".join(inv_lines) + "\n"
+        lieferanten_section = ""
+    else:
+        # Legacy-Fallback für Demo-Daten
+        kontakte_section = (
+            "\n## Bekannte Kontaktnamen\n"
+            + ", ".join(kontakte)
+            + "\nNutze diese Namen für ILIKE-Filter bei Personensuchen.\n"
+            if kontakte else ""
+        )
+        lieferanten_section = (
+            "\n## Bekannte Lieferantennamen\n"
+            + ", ".join(lieferanten)
+            + "\nLieferanten sind KEINE eigene Tabelle — lieferant_name und lieferant_nr "
+            "stehen direkt als Spalten in einkaufspositionen. Niemals auf eine Tabelle "
+            "'lieferanten' joinen. Nutze ILIKE auf einkaufspositionen.lieferant_name.\n"
+            if lieferanten else ""
+        )
     _role = config.system_role() or "Du bist ein SQL-Experte für DuckDB. Du generierst SQL-Abfragen basierend auf Nutzerfragen in natürlicher Sprache."
     return f"""{_role}
 
@@ -192,23 +204,20 @@ def get_system_prompt(
 - Heutiges Datum: {today} — für relative Zeitangaben CURRENT_DATE und INTERVAL-Syntax verwenden
 - Spaltennamen mit Umlauten (z.B. projekteinkäufer_id) in doppelte Anführungszeichen setzen
 - Textsuche auf Namen/Adressen/Bezeichnungen immer mit ILIKE statt LIKE (case-insensitiv)
-- Wenn du auf die Tabelle projekte zugreifst, gib projektnummer IMMER mit aus (auch wenn nicht
-      explizit verlangt), damit Folgefragen den Projektbezug herstellen können.
 - Bei Folgefragen IMMER auf den KONVERSATIONSVERLAUF zurueckgreifen:
-      a) Zuerst das "-- Ergebnis ..."-Kommentar deiner letzten Antwort pruefen — steht dort eine
-         projektnummer, verwende sie direkt als Filter.
-      b) Falls die projektnummer im Ergebnis fehlt, schaue auf das SQL deiner letzten Antwort:
-         leite daraus die WHERE-/JOIN-Bedingungen ab und baue ein Subquery, z.B.:
-         SELECT * FROM projekte WHERE "projekteinkäufer_id" = (SELECT kontakt_id FROM kontakte WHERE name LIKE '%xxx yyy%')
-      c) Die Werte aus den BEISPIELEN unten (z.B. projektnummer 10001) sind NUR illustrativ —
-         sie duerfen NIEMALS als Kontext-Anker bei Folgefragen dienen.
+      a) Den [SYSTEM-ERGEBNIS]-Block der letzten Antwort prüfen — dort stehen konkrete
+         Werte (IDs, Nummern, Namen) aus dem vorherigen Ergebnis. Diese direkt als Filter verwenden.
+      b) Falls der gesuchte Wert im Ergebnis fehlt, die WHERE-/JOIN-Bedingungen des letzten
+         SQL ableiten und als Subquery wiederverwenden.
+      c) Werte aus den BEISPIELEN unten sind NUR illustrativ — sie dürfen NIEMALS als
+         Kontext-Anker bei Folgefragen dienen.
       Das vorherige SQL sinnvoll erweitern oder umschreiben (z.B. "gruppiere das nach Monat")
 - Zahlen in Euro auf 2 Dezimalstellen runden: ROUND(wert, 2)
 - FALSCH: col IS NOT IN (...)   RICHTIG: col NOT IN (...)
       FALSCH: col IS IN (...)       RICHTIG: col IN (...)
       IS/IS NOT nur für NULL-Vergleiche: col IS NULL, col IS NOT NULL
 - Datumsfilter NUR einbauen wenn die Frage explizit einen Zeitraum oder ein Datum nennt.
-      Enthält die Frage KEIN Datum, KEIN "letztes Quartal", KEIN "dieses Jahr" o.ä. → KEIN WHERE auf belegdatum.
+      Enthält die Frage KEIN Datum, KEIN "letztes Quartal", KEIN "dieses Jahr" o.ä. → KEINEN Datumsfilter setzen.
 - Bei ambigen Anfragen die naheliegendste Interpretation wählen
 - DuckDB-Funktionen statt PostgreSQL/Oracle verwenden:
     FALSCH: TO_CHAR(datum, 'YYYY-MM')  RICHTIG: strftime(datum::DATE, '%Y-%m')

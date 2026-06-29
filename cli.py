@@ -158,6 +158,31 @@ def yaml2duckdb(
 
 
 @app.command()
+def prompt():
+    """Gibt den aktuellen System-Prompt inkl. Schema und Value Inventories aus."""
+    from src.profiler import load_profiles_from_dir
+    from src import config as cfg
+    from src.schema import get_system_prompt
+    from src.db import execute
+
+    profiles = []
+    pd = cfg.profiles_dir()
+    if pd.exists():
+        profiles = load_profiles_from_dir(pd)
+
+    # Value Inventories aus DB laden
+    value_inventories = []
+    for inv in cfg.value_inventories():
+        df, err = execute(inv["sql"])
+        if not err and df is not None and not df.empty:
+            rows = df.apply(lambda r: "  ".join(str(v) for v in r if v), axis=1).tolist()
+            value_inventories.append({"label": inv["label"], "values": rows, "hint": inv.get("hint", "")})
+
+    prompt_text = get_system_prompt(profiles=profiles, value_inventories=value_inventories)
+    console.print(prompt_text)
+
+
+@app.command()
 def models():
     """Listet verfügbare Ollama-Modelle auf."""
     import ollama

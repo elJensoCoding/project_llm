@@ -94,6 +94,11 @@ def extra_rules() -> list[str]:
     return get()["prompt"].get("extra_rules") or []
 
 
+def value_inventories() -> list[dict]:
+    """Liste von {label, sql, hint?} — zur Laufzeit aus der DB laden."""
+    return get().get("value_inventories") or []
+
+
 def prompt_examples() -> list[dict]:
     return get()["prompt"].get("examples") or []
 

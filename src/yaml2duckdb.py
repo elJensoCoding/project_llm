@@ -27,8 +27,18 @@ def _sql_str(value: str) -> str:
 
 
 def _col_cast_expr(col: dict) -> str:
-    """Baut einen CAST-Ausdruck für eine Spalte."""
-    q = _quote(col["name"])
+    """Baut einen CAST/STRPTIME-Ausdruck für eine Spalte.
+    Bei date_format im Profil wird STRPTIME verwendet."""
+    q     = _quote(col["name"])
+    dtype = col["duckdb_type"].upper()
+    fmt   = col.get("date_format")
+
+    if fmt and dtype in ("DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE"):
+        if dtype == "DATE":
+            return f"STRPTIME({q}, {_sql_str(fmt)})::DATE AS {q}"
+        else:
+            return f"STRPTIME({q}, {_sql_str(fmt)}) AS {q}"
+
     return f"CAST({q} AS {col['duckdb_type']}) AS {q}"
 
 
@@ -116,9 +126,18 @@ def _load_single(
         return
 
     casts = ", ".join(_col_cast_expr(c) for c in columns)
-    src = _sql_str(source.as_posix())
+    src   = _sql_str(source.as_posix())
 
-    select = f"SELECT {casts} FROM read_csv_auto({src}, nullstr='')"
+    # Spalten mit date_format müssen als VARCHAR eingelesen werden,
+    # damit STRPTIME ein VARCHAR bekommt und nicht ein bereits (falsch) geparstes DATE.
+    date_fmt_cols = {c["name"] for c in columns if c.get("date_format")}
+    if date_fmt_cols:
+        types_kvs = ", ".join(f"'{n}': 'VARCHAR'" for n in date_fmt_cols)
+        read_expr = f"read_csv_auto({src}, nullstr='', types={{{types_kvs}}})"
+    else:
+        read_expr = f"read_csv_auto({src}, nullstr='')"
+
+    select = f"SELECT {casts} FROM {read_expr}"
     ddl = _build_create_table(profile)
 
     con.execute(ddl)

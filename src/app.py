@@ -57,26 +57,6 @@ _state = _State()
 
 # Kontaktnamen einmalig aus DuckDB laden — werden in jeden System-Prompt injiziert
 # damit das LLM Personennamen korrekt auflösen kann (ILIKE-Filter).
-def _load_kontakte() -> list[str]:
-    try:
-        df, err = db_execute("SELECT name FROM kontakte ORDER BY name")
-        if err or df is None or df.empty:
-            return []
-        return df["name"].tolist()
-    except Exception:
-        return []
-
-def _load_lieferanten() -> list[str]:
-    try:
-        df, err = db_execute(
-            "SELECT DISTINCT lieferant_name FROM einkaufspositionen ORDER BY lieferant_name"
-        )
-        if err or df is None or df.empty:
-            return []
-        return df["lieferant_name"].tolist()
-    except Exception:
-        return []
-
 def _load_profiles() -> list[dict]:
     """Lädt YAML-Profile aus dem konfigurierten profiles_dir wenn vorhanden."""
     try:
@@ -91,11 +71,30 @@ def _load_profiles() -> list[dict]:
         pass
     return []
 
-# Profile haben Vorrang — enthalten Schema + Value Inventories in einem.
-# Fallback auf separate DuckDB-Abfragen wenn keine Profile vorhanden.
+
+def _load_value_inventories() -> list[dict]:
+    """Führt die konfigurierten Value-Inventory-Queries gegen die DB aus."""
+    from src import config as cfg
+    result = []
+    for inv in cfg.value_inventories():
+        try:
+            df, err = db_execute(inv["sql"])
+            if err or df is None or df.empty:
+                continue
+            # Alle Spalten zu einem lesbaren String zusammenführen
+            rows = df.apply(lambda r: "  ".join(str(v) for v in r if v), axis=1).tolist()
+            result.append({
+                "label": inv["label"],
+                "values": rows,
+                "hint":   inv.get("hint", ""),
+            })
+        except Exception:
+            pass
+    return result
+
+
 _PROFILES: list[dict] = _load_profiles()
-_KONTAKTE: list[str] = [] if _PROFILES else _load_kontakte()
-_LIEFERANTEN: list[str] = [] if _PROFILES else _load_lieferanten()
+_VALUE_INVENTORIES: list[dict] = _load_value_inventories()
 
 # Pro Browser-Tab eine eigene ChatSession (Konversationshistorie).
 # Cleanup beim Disconnect verhindert Memory-Leak bei langen Laufzeiten.
@@ -234,7 +233,7 @@ def _result_table(df: pd.DataFrame, container) -> None:
 def index(client: Client) -> None:
 
     # Eigene Konversationshistorie pro Tab
-    _client_sessions[client.id] = ChatSession(model=_state.model, kontakte=_KONTAKTE, lieferanten=_LIEFERANTEN, profiles=_PROFILES)
+    _client_sessions[client.id] = ChatSession(model=_state.model, profiles=_PROFILES, value_inventories=_VALUE_INVENTORIES)
 
     async def _cleanup() -> None:
         _client_sessions.pop(client.id, None)
@@ -371,7 +370,7 @@ def index(client: Client) -> None:
         ui.notify(f"Modell: {e.value}", type="positive", position="top-right", timeout=2000)
 
     def on_reset() -> None:
-        _client_sessions[client.id] = ChatSession(model=_state.model, kontakte=_KONTAKTE, lieferanten=_LIEFERANTEN, profiles=_PROFILES)
+        _client_sessions[client.id] = ChatSession(model=_state.model, profiles=_PROFILES, value_inventories=_VALUE_INVENTORIES)
         chat_area.clear()
         with chat_area:
             _welcome_message()

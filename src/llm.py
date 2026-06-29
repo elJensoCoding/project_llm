@@ -56,16 +56,21 @@ class ChatSession:
     def __init__(
         self,
         model: str = DEFAULT_MODEL,
+        profiles: list[dict] | None = None,
+        value_inventories: list[dict] | None = None,
+        # Legacy-Parameter für Demo-Daten ohne DB-Verbindung
         kontakte: list[str] | None = None,
         lieferanten: list[str] | None = None,
-        profiles: list[dict] | None = None,
     ) -> None:
         self.model = model
+        self._profiles = profiles
+        self._value_inventories = value_inventories
         self._kontakte = kontakte
         self._lieferanten = lieferanten
-        self._profiles = profiles
         self._messages: list[dict] = [
-            {"role": "system", "content": get_system_prompt(kontakte, lieferanten, profiles)}
+            {"role": "system", "content": get_system_prompt(
+                kontakte, lieferanten, profiles, value_inventories
+            )}
         ]
 
     def ask(self, question: str) -> str:
@@ -114,7 +119,9 @@ class ChatSession:
         return response.message.content.strip()
 
     def reset(self) -> None:
-        self._messages = [{"role": "system", "content": get_system_prompt(self._kontakte, self._lieferanten, self._profiles)}]
+        self._messages = [{"role": "system", "content": get_system_prompt(
+            self._kontakte, self._lieferanten, self._profiles, self._value_inventories
+        )}]
 
     @property
     def turn_count(self) -> int:

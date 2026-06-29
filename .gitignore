@@ -20,3 +20,9 @@ data/parquet/
 
 # Env
 .env
+data/schema/artikel.yaml
+data/schema/einkauf.yaml
+data/schema/kontakte.yaml
+data/schema/lieferant.yaml
+data/schema/project.yaml
+data/db.duckdb
