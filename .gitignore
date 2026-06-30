@@ -7,11 +7,23 @@ __pycache__/
 dist/
 build/
 
-# Daten (generiert)
+# Konfiguration (enthält ggf. interne Daten)
+pllm_config.yaml
+data/schema/
+
+# Query-Log (interne Nutzungsdaten)
+data/query_log.jsonl
+
+# Backup-Archive
+*.7z
+*.zip
+
+# Daten (generiert / intern)
 data/csv/
 data/parquet/
 
-# IDE
+# Claude Code / IDE
+.claude/settings.local.json
 .vscode/
 .idea/
 

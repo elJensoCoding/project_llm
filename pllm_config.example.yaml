@@ -1,0 +1,146 @@
+# pllm_config.example.yaml — Beispielkonfiguration für den Projekt-LLM Assistenten
+#
+# Kopieren und anpassen:
+#   cp pllm_config.example.yaml pllm_config.yaml
+#
+# Starten mit eigener Config:
+#   python cli.py --config meine_config.yaml chat
+#
+# Alle Felder sind optional — nicht gesetzte Werte verwenden Defaults.
+version: 1
+
+database:
+  # Persistente DuckDB-Datei (empfohlen für Produktivbetrieb)
+  # Kommentieren für in-memory Betrieb mit Parquet-Views
+  path: data/db.duckdb
+
+  # Verzeichnis mit CSV-Quelldaten
+  csv_dir: data/csv
+
+  # Verzeichnis mit Parquet-Dateien (für in-memory Modus)
+  parquet_dir: data/parquet
+
+  # Verzeichnis mit YAML-Profilen (Schema-Injection in LLM-Prompt)
+  profiles_dir: data/schema
+
+llm:
+  # Ollama-Modell — qwen2.5-coder:7b empfohlen für SQL-Qualität
+  model: qwen2.5-coder:7b
+  # Alternativen: qwen3:4b, gemma3, llama3.1:8b
+
+app:
+  port: 8080
+  host: 127.0.0.1
+
+prompt:
+  # Beschreibung des Systems und der Domäne für den LLM
+  system_role: >
+    Du bist ein SQL-Experte für DuckDB und Assistent im Projekteinkauf.
+    Du generierst SQL-Abfragen auf einer Einkaufsdatenbank mit Projekten,
+    Mitarbeitern, Lieferanten, Artikeln und Einkaufsvorgängen (Anfragen,
+    Bestellungen, Rechnungen). Antworte auf Deutsch.
+
+  # Zusätzliche Regeln die an den Standard-Prompt angehängt werden.
+  # Hier: domänenspezifische Hinweise zu Sonderfällen im Datenmodell.
+  extra_rules:
+    - "mitarbeiter hat getrennte Spalten: 'prename' (Vorname) und 'name' (Nachname).
+      Für Volltextsuche: CONCAT(prename, ' ', name) ILIKE '%Vorname Nachname%'"
+
+    - "einkauf.typ hat genau 3 Werte: 'Anfrage' (Preisanfrage), 'Bestellung' (Auftrag erteilt),
+      'Rechnung' (Rechnung eingegangen). Für Budgetberechnungen: typ='Bestellung'."
+
+    - "project.nummer ist die lesbare Projektnummer (VARCHAR, z.B. '10001').
+      Für Projektfilter immer: WHERE p.nummer = '10001' (mit Anführungszeichen)"
+
+  # Beispiel-Queries die dem LLM als Few-Shot-Beispiele gezeigt werden.
+  # Je mehr und je domänenspezifischer, desto besser die SQL-Qualität.
+  examples:
+    - q: "Wie viele Projekte gibt es?"
+      sql: "SELECT COUNT(*) AS anzahl_projekte FROM project"
+
+    - q: "Welcher Projektleiter betreut die meisten Projekte?"
+      sql: >
+        SELECT CONCAT(m.prename, ' ', m.name) AS projektleiter,
+               COUNT(*) AS anzahl_projekte
+        FROM project p
+        JOIN mitarbeiter m ON p.projektleiter_mitarbeiter_id = m.id
+        GROUP BY m.id, m.prename, m.name
+        ORDER BY anzahl_projekte DESC
+
+    - q: "Top 5 Lieferanten nach Bestellwert"
+      sql: >
+        SELECT l.name AS lieferant,
+               ROUND(SUM(e.positionswert), 2) AS bestellwert,
+               COUNT(DISTINCT e.nummer) AS anzahl_bestellungen
+        FROM einkauf e
+        JOIN lieferant l ON e.lieferant_id = l.id
+        WHERE e.typ = 'Bestellung'
+        GROUP BY l.id, l.name
+        ORDER BY bestellwert DESC
+        LIMIT 5
+
+    - q: "Überfällige Bestellungen"
+      sql: >
+        SELECT e.nummer, e.liefertermin, l.name AS lieferant,
+               p.nummer AS projekt,
+               ROUND(SUM(e.positionswert), 2) AS bestellwert
+        FROM einkauf e
+        JOIN project p ON e.project_id = p.id
+        JOIN lieferant l ON e.lieferant_id = l.id
+        WHERE e.typ = 'Bestellung'
+          AND e.liefertermin IS NOT NULL
+          AND e.liefertermin::DATE < CURRENT_DATE
+          AND e.id NOT IN (
+            SELECT referenz_id FROM einkauf
+            WHERE typ = 'Rechnung' AND referenz_id IS NOT NULL
+          )
+        GROUP BY e.nummer, e.liefertermin, l.name, p.nummer
+        ORDER BY e.liefertermin ASC
+
+    - q: "Wie viele Bestellungen sind noch nicht bezahlt?"
+      sql: >
+        SELECT COUNT(DISTINCT e.nummer) AS offene_bestellungen,
+               ROUND(SUM(e.positionswert), 2) AS offener_bestellwert
+        FROM einkauf e
+        WHERE e.typ = 'Bestellung'
+          AND e.id NOT IN (
+            SELECT referenz_id FROM einkauf
+            WHERE typ = 'Rechnung' AND referenz_id IS NOT NULL
+          )
+
+    - q: "Einkaufsvolumen gruppiert nach Gewerk in Projekt 10001"
+      sql: >
+        SELECT e.gewerk_id AS gewerk,
+               ROUND(SUM(e.positionswert), 2) AS volumen,
+               COUNT(DISTINCT e.nummer) AS anzahl_belege
+        FROM einkauf e
+        JOIN project p ON e.project_id = p.id
+        WHERE p.nummer = '10001'
+          AND e.typ = 'Bestellung'
+          AND e.gewerk_id IS NOT NULL
+        GROUP BY e.gewerk_id
+        ORDER BY volumen DESC
+
+    - q: "In Projekt 10001 habe ich ein Budget von 500000 — wie viel darf ich noch ausgeben?"
+      sql: >
+        SELECT 500000 AS budget,
+               ROUND(SUM(e.positionswert), 2) AS gebunden,
+               ROUND(500000 - SUM(e.positionswert), 2) AS verbleibend
+        FROM einkauf e
+        JOIN project p ON e.project_id = p.id
+        WHERE p.nummer = '10001'
+          AND e.typ = 'Bestellung'
+
+# Stammdaten die zur Laufzeit aus der DB geladen und in den Prompt injiziert werden.
+# Jeder Eintrag wird als eigener Abschnitt im System-Prompt gerendert.
+value_inventories:
+  - label: Mitarbeiter (intern — Tabelle mitarbeiter)
+    sql: "SELECT CONCAT(prename, ' ', name) AS vollname FROM mitarbeiter ORDER BY name"
+    hint: "Interne Mitarbeiter: CONCAT(prename, ' ', name) ILIKE '%Vorname Nachname%' auf Tabelle mitarbeiter"
+
+  - label: Projekte
+    sql: "SELECT nummer, such, ort FROM project ORDER BY CAST(nummer AS INTEGER)"
+    hint: "Joins über project.id (nicht nummer)"
+
+  - label: Gewerke
+    sql: "SELECT DISTINCT gewerk_id FROM einkauf WHERE gewerk_id IS NOT NULL ORDER BY gewerk_id"
