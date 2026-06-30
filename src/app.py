@@ -221,9 +221,17 @@ def _result_table(df: pd.DataFrame, container) -> None:
             ui.echart(chart_opts).classes("w-full").style("height: 380px")
             ui.separator().classes("my-2")
         ui.aggrid(grid_opts).classes("w-full").style(f"height: {_GRID_HEIGHT_PX}px")
-        ui.label(f"{len(df):,} Zeile(n)  |  {len(df.columns)} Spalte(n)").classes(
-            "text-xs text-gray-400 mt-1"
-        )
+        with ui.row().classes("items-center gap-2 mt-1"):
+            ui.label(f"{len(df):,} Zeile(n)  |  {len(df.columns)} Spalte(n)").classes(
+                "text-xs text-gray-400"
+            )
+            def _download(df=df) -> None:
+                # utf-8-sig: BOM damit Excel Umlaute korrekt öffnet; Semikolon für DE-Excel
+                csv_bytes = df.to_csv(index=False, sep=";").encode("utf-8-sig")
+                ui.download(csv_bytes, "export.csv")
+            ui.button(icon="download", on_click=_download).props(
+                "flat dense round size=xs color=grey"
+            ).tooltip("Als CSV herunterladen (Excel-kompatibel)")
 
 
 # ---------------------------------------------------------------------------
